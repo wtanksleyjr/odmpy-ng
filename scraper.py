@@ -374,6 +374,7 @@ class Scraper:
             # The end of each chapter is the start of the next.
             end = self.chapter_seconds[index+1] if index+1 < len(self.chapter_seconds) else None
             chapter_markers.append( (title.text, chapter_times[index], end) )
+            print(f"Found chapter: '{title.text}' starting {chapter_times[index]}")
         
         # Close chapter table
         chapter_table_close = self.driver.find_element(By.CLASS_NAME, 'shibui-shield')
@@ -457,10 +458,11 @@ class Scraper:
         for ch, part in sorted(chapter_to_part.items()):
             if ch == 0:
                 continue
-            # ch is the chapter exactly where 'part' is found.
-            for intermediate_pt in range(last_seen+1, part):
-                # often we don't see every part, so we fill in the gaps.
-                part_to_chapter[intermediate_pt] = ch - 1
+            if part != last_seen:
+                # ch is the chapter exactly where 'part' is found.
+                for intermediate_pt in range(last_seen+1, part):
+                    # often we don't see every part, so we fill in the gaps.
+                    part_to_chapter[intermediate_pt] = ch - 1
             last_seen = part
             part_to_chapter[part] = ch
         past_end = max(part_to_chapter.values()) + 1
