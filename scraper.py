@@ -398,7 +398,7 @@ class Scraper:
         expected_duration = convert_metadata.to_seconds(expected_time)
         self.chapter_seconds.append(expected_duration)
 
-        print("Getting chapter:part structure.")
+        print(f"Building structure chapter:part ({len(self.chapter_seconds)} chapters):", end='')
 
         # Initialize part 1 always in chapter 0.
         chapter_to_part = {0:1}
@@ -408,23 +408,27 @@ class Scraper:
         ch = self.chapter_containing(current_location)
         parts = set(int(k) for k in mp3_urls.keys()) - seen_parts
         if parts:
-            chapter_to_part[ch] = min(parts)
+            part = min(parts)
+            chapter_to_part[ch] = part
         seen_parts.update(parts)
 
+
         # Partition the book by skimming through chapters and observing known parts.
-        print(f"Building structure chapter:part ({len(self.chapter_seconds)} chapters):", end='')
         needs_end = True
         for ch in range(len(self.chapter_seconds)):
-            print(f" {ch}", end='', flush=True)
             parts = set(int(k) for k in self.requests_to_mp3_files()) - seen_parts
             if chapter_to_part.get(ch) is None and parts:
-                chapter_to_part[ch] = min(parts)
+                part = min(parts)
+                chapter_to_part[ch] = part
+            if ch in chapter_to_part:
+                print(f" {ch}:{chapter_to_part[ch]:02d}", end='', flush=True)
             seen_parts.update(parts)
             if chapter_next.is_enabled():
                 chapter_next.click()
                 time.sleep(0.5)
-            else:
+            elif needs_end:
                 needs_end = False
+                print(f"\nChapter skip stopped normally at chapter {ch}", end='')
         print() # finish the above progress bar.
 
         # Find the end of the book, including any trailing 'parts'.
@@ -506,7 +510,7 @@ class Scraper:
                 print(f"ERROR: tmp folder contains {to_hms(loaded_duration)} duration media files when expected {to_hms(int(exact_size))}, please remove or clean up: {tmp_dir}")
                 sys.exit(1)
             part_num = len(resumable_parts) + 1
-            print(f"Resuming download from {part_num} part(s) at {to_hms(loaded_duration)}")
+            print(f"Resuming download from part {part_num} at {to_hms(loaded_duration)}")
 
         # Main loop for walking through book
         while loaded_duration < expected_duration-1:
@@ -529,9 +533,14 @@ class Scraper:
 
             # Begin search for the absent part.
             lower_bound = int(loaded_duration)
-            # Look up the upper bound in our table (we start at the end of the given chapter)
+            # Look up the upper bound in our table (we start at the end of the
+            # chapter that might contain the next part).
             if part_num in part_to_chapter:
-                upper_bound = self.chapter_seconds[1 + part_to_chapter[part_num]]
+                ch = part_to_chapter[part_num]
+                upper_bound = self.chapter_seconds[1 + ch]
+                while upper_bound <= lower_bound and 1+ch < len(self.chapter_seconds):
+                    upper_bound = self.chapter_seconds[1 + ch]
+                    ch += 1
             else:
                 upper_bound = expected_duration
             # Clip the upper bound to a maximum of 3 hours, should be longer
@@ -591,28 +600,39 @@ class Scraper:
                     time.sleep(1)
 
                     chapter_title_elements = self.driver.find_elements(By.CLASS_NAME, 'chapter-dialog-row-title')
+                    clicked = False
 
                     for index, title in enumerate(chapter_title_elements):
                         # Go to the beginning of the chapter we need, or the
                         # last chapter if we're trying to get to the end.
                         if index == desired_chapter or (index == len(chapter_title_elements) - 1 and upper_bound == expected_duration):
                             title.click()
+                            clicked = True
                             break
 
                     # Close chapter table
                     chapter_table_close = self.driver.find_element(By.CLASS_NAME, 'shibui-shield')
                     chapter_table_close.click()
                     time.sleep(1)
+                    if clicked:
+                        current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
+                        print(f"Clicked to chapter {desired_chapter}/{len(self.chapter_seconds)-1} at {to_hms(current_location)}")
 
-                    current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
-                    current_chapter = self.chapter_containing(current_location)
+                    if current_location != desired_chapter_start:
+                        if self.chapter_seconds[current_chapter] == desired_chapter_start:
+                            current_chapter = desired_chapter
+                        else:
+                            current_chapter = self.chapter_containing(current_location)
                     current_chapter_start = self.chapter_seconds[current_chapter]
 
                     # Sometimes the player dumps us in the middle of a chapter, so go back if optimal.
                     if current_location > current_chapter_start:
-                        print(f"Player dumped us in the middle of a chapter, going back {current_location-current_chapter_start}s.")
-                        chapter_previous.click()
-                        time.sleep(1)
+                        if chapter_previous.is_enabled():
+                            print(f"Player dumped us in the middle of a chapter, going back {current_location-current_chapter_start}s.")
+                            chapter_previous.click()
+                            time.sleep(1)
+                        else:
+                            print(f"INFO: Player dumped us in the middle of a chapter, but can't go back, at {to_hms(current_location)}.")
                         current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
 
                     if self.has_url(part_num):
@@ -628,25 +648,31 @@ class Scraper:
                 # Next, try to use the minute-skip key to get into the range.
                 body = self.driver.find_element(By.TAG_NAME, "body")
                 old_location = current_location
-                while current_location <= lower_bound and current_location <= upper_bound-60 and not self.has_url(part_num):
-                    # ffwd into the range if you can, without going past it.
-                    body.send_keys(Keys.PAGE_DOWN)
-                    time.sleep(.5)
-                    current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
-                while current_location-60 > lower_bound and not self.has_url(part_num):
-                    # frewind back to near the start of the range, without going past it.
-                    body.send_keys(Keys.PAGE_UP)
-                    time.sleep(.5)
-                    current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
+                print(f"Locations: {to_hms(lower_bound)} <= {to_hms(current_location)} < {to_hms(upper_bound)}")
+                if current_location < lower_bound:
+                    if current_location+60 < upper_bound:
+                        print(f"Skipping forward by minutes from {to_hms(current_location)} to {to_hms(upper_bound)}, max {(upper_bound-current_location)//60} skips")
+                        start = current_location
+                        while current_location <= lower_bound and current_location <= upper_bound-60 and not self.has_url(part_num):
+                            # ffwd into the range if you can, without going past it.
+                            body.send_keys(Keys.PAGE_DOWN)
+                            time.sleep(.5)
+                            current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
+                        print(f"Skipped forward {to_hms(current_location-start)} to {to_hms(current_location)}")
+                if current_location > upper_bound and current_location-60 > lower_bound:
+                    print(f"Skipping backward by minutes from {to_hms(current_location)} to {to_hms(lower_bound)}, max {(current_location-lower_bound)//60} skips")
+                    start = current_location
+                    while current_location-60 > lower_bound and not self.has_url(part_num):
+                        # frewind back to near the start of the range, without going past it.
+                        body.send_keys(Keys.PAGE_UP)
+                        time.sleep(.5)
+                        current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
+                    print(f"Skipped backward {to_hms(start-current_location)} to {to_hms(current_location)}")
                 if self.has_url(part_num):
                     # Shortcut if we're done.
                     continue
-                if old_location != current_location:
-                    dir = "forward" if old_location < current_location else "backward"
-                    mins = abs(old_location - current_location) / 60
-                    print(f"Skipped {dir} {mins:.2f} mins")
-                if not self.has_url(part_num) and lower_bound < current_location <= upper_bound:
-                    print(f"No URL for {part_num} at {upper_bound}, reducing to {current_location-1}.")
+                if lower_bound < current_location <= upper_bound:
+                    print(f"No URL for {part_num} at {to_hms(current_location)}, reducing upper bound by {to_hms(upper_bound-current_location)}.")
                     upper_bound = current_location - 1
                 # Next, try to use the small-skip key to get into the new range.
                 old_location = current_location
