@@ -593,8 +593,7 @@ class Scraper:
                 chapter_move, current_chapter = self.closest_chapter_mark(lower_bound, upper_bound, current_location)
                 if chapter_move:
                     desired_chapter, desired_chapter_start = chapter_move
-                    span = desired_chapter_start - current_location
-                    print(f"Skipping from chapter {current_chapter} to {desired_chapter}/{len(self.chapter_seconds)-1}, span {span}s.")
+                    print(f"Skipping from chapter {current_chapter} to {desired_chapter}/{len(self.chapter_seconds)-1}.")
 
                     chapter_table_open.click()
                     time.sleep(1)
@@ -625,25 +624,20 @@ class Scraper:
                             current_chapter = self.chapter_containing(current_location)
                     current_chapter_start = self.chapter_seconds[current_chapter]
 
-                    # Sometimes the player dumps us in the middle of a chapter, so go back if optimal.
-                    if current_location > current_chapter_start:
+                    # Sometimes the player dumps us in the middle of a chapter, so go back if it might help.
+                    if current_location > current_chapter_start and current_location >= upper_bound:
                         if chapter_previous.is_enabled():
                             print(f"Player dumped us in the middle of a chapter, going back {current_location-current_chapter_start}s.")
                             chapter_previous.click()
                             time.sleep(1)
-                        else:
-                            print(f"INFO: Player dumped us in the middle of a chapter, but can't go back, at {to_hms(current_location)}.")
                         current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
 
                     if self.has_url(part_num):
                         continue
                     elif lower_bound <= current_location < upper_bound:
-                        # Check for a possibly fuzzy lower_bound, mp3 sometimes is a few seconds off.
-                        if lower_bound <= current_location <= lower_bound + 15:
-                            lower_bound = current_location + 1
-                        else:
-                            # If there's an internal split, it gives us a new upper bound.
-                            print(f"No URL for {part_num} at {current_location}, reducing to {current_location-1}.")
+                        if current_location > lower_bound + 15:
+                            # If there's an internal split, it gives us a new upper bound (but don't cut if we're within 15 seconds)
+                            print(f"No URL for {part_num} at {current_location}, but reducing upper bound by {to_hms(upper_bound-current_location)}.")
                             upper_bound = current_location - 1
                 # Next, try to use the minute-skip key to get into the range.
                 body = self.driver.find_element(By.TAG_NAME, "body")
@@ -659,7 +653,7 @@ class Scraper:
                             time.sleep(.5)
                             current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
                         print(f"Skipped forward {to_hms(current_location-start)} to {to_hms(current_location)}")
-                if current_location > upper_bound and current_location-60 > lower_bound:
+                elif current_location > upper_bound and current_location-60 > lower_bound:
                     print(f"Skipping backward by minutes from {to_hms(current_location)} to {to_hms(lower_bound)}, max {(current_location-lower_bound)//60} skips")
                     start = current_location
                     while current_location-60 > lower_bound and not self.has_url(part_num):
