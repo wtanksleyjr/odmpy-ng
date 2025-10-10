@@ -279,11 +279,18 @@ class Scraper:
                 current_location (int): Current location in the book.
         """
         current_chapter = self.chapter_containing(current_location)
+        # Easy: the chapter containing the lower bound.
         earliest_chapter = self.chapter_containing(lower_bound)
-        mid_chapter = self.chapter_containing(lower_bound) + 1
+        # Scan for the chapter after the lower bound.
+        mid_chapter = earliest_chapter + 1
+        while mid_chapter < len(self.chapter_seconds) and self.chapter_seconds[mid_chapter] <= lower_bound + 60:
+            mid_chapter += 1
+        # And the chapter after (not containing) the upper bound.
         ending_chapter = self.chapter_containing(upper_bound) + 1
+        while ending_chapter < len(self.chapter_seconds) and self.chapter_seconds[ending_chapter] <= upper_bound:
+            ending_chapter += 1
         # Best case: there's an easy chapter mark cutting the range in half.
-        if current_chapter < mid_chapter < ending_chapter:
+        if earliest_chapter < mid_chapter < ending_chapter:
             return (mid_chapter, self.chapter_seconds[mid_chapter]), current_chapter
         # No easy chapter mark. We will assess three distances:
         # 1. Earliest chapter start to lower bound
@@ -584,7 +591,7 @@ class Scraper:
 
                 # Handle a "collapse" (lower==upper) by trying to search the whole book.
                 if not collapse_detected and lower_bound == upper_bound:
-                    print(f"Could not find part {part_num}, retrying by searching whole book.")
+                    print(f"Could not find part {part_num}, retrying by searching the rest of the book.")
                     upper_bound = self.chapter_seconds[-1]
                     collapse_detected = True
 
@@ -625,7 +632,7 @@ class Scraper:
                     current_chapter_start = self.chapter_seconds[current_chapter]
 
                     # Sometimes the player dumps us in the middle of a chapter, so go back if it might help.
-                    if current_location > current_chapter_start and current_location >= upper_bound:
+                    if current_location > current_chapter_start and current_chapter_start > lower_bound:
                         if chapter_previous.is_enabled():
                             print(f"Player dumped us in the middle of a chapter, going back {current_location-current_chapter_start}s.")
                             chapter_previous.click()
@@ -635,8 +642,8 @@ class Scraper:
                     if self.has_url(part_num):
                         continue
                     elif lower_bound <= current_location < upper_bound:
-                        if current_location > lower_bound + 15:
-                            # If there's an internal split, it gives us a new upper bound (but don't cut if we're within 15 seconds)
+                        if current_location > lower_bound + 60:
+                            # If there's an internal split, it gives us a new upper bound (but don't cut if we're within 60 seconds of the lower bound).
                             print(f"No URL for {part_num} at {current_location}, but reducing upper bound by {to_hms(upper_bound-current_location)}.")
                             upper_bound = current_location - 1
                 # Next, try to use the minute-skip key to get into the range.
@@ -644,30 +651,34 @@ class Scraper:
                 old_location = current_location
                 print(f"Locations: {to_hms(lower_bound)} <= {to_hms(current_location)} < {to_hms(upper_bound)}")
                 if current_location < lower_bound:
+                    # If we can avoid skipping the whole range, skip forward into the range.
                     if current_location+60 < upper_bound:
                         print(f"Skipping forward by minutes from {to_hms(current_location)} to {to_hms(upper_bound)}, max {(upper_bound-current_location)//60} skips")
                         start = current_location
-                        while current_location <= lower_bound and current_location <= upper_bound-60 and not self.has_url(part_num):
+                        # Try to go a halfway into the range, or a minute in if that is more; but not past the upper bound.
+                        while current_location < min(upper_bound, max( (lower_bound+upper_bound)//2, lower_bound+60)) and not self.has_url(part_num):
                             # ffwd into the range if you can, without going past it.
                             body.send_keys(Keys.PAGE_DOWN)
                             time.sleep(.5)
                             current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
                         print(f"Skipped forward {to_hms(current_location-start)} to {to_hms(current_location)}")
-                elif current_location > upper_bound and current_location-60 > lower_bound:
-                    print(f"Skipping backward by minutes from {to_hms(current_location)} to {to_hms(lower_bound)}, max {(current_location-lower_bound)//60} skips")
-                    start = current_location
-                    while current_location-60 > lower_bound and not self.has_url(part_num):
-                        # frewind back to near the start of the range, without going past it.
-                        body.send_keys(Keys.PAGE_UP)
-                        time.sleep(.5)
-                        current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
-                    print(f"Skipped backward {to_hms(start-current_location)} to {to_hms(current_location)}")
+                elif current_location > upper_bound:
+                    if current_location-60 > lower_bound:
+                        print(f"Skipping backward by minutes from {to_hms(current_location)} to {to_hms(lower_bound)}, max {(current_location-lower_bound)//60} skips")
+                        start = current_location
+                        while current_location-60 > lower_bound and not self.has_url(part_num):
+                            # frewind back to near the start of the range, without going past it.
+                            body.send_keys(Keys.PAGE_UP)
+                            time.sleep(.5)
+                            current_location = convert_metadata.to_seconds(timeline_current_time.get_attribute("textContent"))
+                        print(f"Skipped backward {to_hms(start-current_location)} to {to_hms(current_location)}")
                 if self.has_url(part_num):
                     # Shortcut if we're done.
                     continue
                 if lower_bound < current_location <= upper_bound:
-                    print(f"No URL for {part_num} at {to_hms(current_location)}, reducing upper bound by {to_hms(upper_bound-current_location)}.")
-                    upper_bound = current_location - 1
+                    if current_location > lower_bound + 15:
+                        print(f"No URL for {part_num} at {to_hms(current_location)}, reducing upper bound by {to_hms(upper_bound-current_location)}.")
+                        upper_bound = current_location - 1
                 # Next, try to use the small-skip key to get into the new range.
                 old_location = current_location
                 while current_location <= lower_bound and current_location <= upper_bound-15 and not self.has_url(part_num):
