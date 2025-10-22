@@ -312,8 +312,7 @@ class Scraper:
 
         # Main loop for walking through book
         while loaded_duration < mp3_searcher.expected_duration-1:
-            # Collect available urls, and download next part; this also detects
-            # loop end when audio is complete.
+            # Collect available urls, and download next part.
             url = mp3_searcher.get_url(part_num)
             if url:
                 length = overdrive_download.download_mp3_part(url, part_num, download_path, self.get_cookies())
@@ -331,7 +330,7 @@ class Scraper:
             lower_bound = int(loaded_duration)
             upper_bound = mp3_searcher.get_upper_bound(part_num, lower_bound)
 
-            print(f"Missing part {part_num} between ({lower_bound}, {upper_bound}) sec")
+            print(f"Missing part {part_num} between ({to_hms(lower_bound)}, {to_hms(upper_bound)})")
             old_upper_bound = None
             collapse_detected = False
             while not mp3_searcher.has_url(part_num):
@@ -392,10 +391,11 @@ class Scraper:
                     if mp3_searcher.has_url(part_num):
                         continue
                     elif lower_bound <= current_location < upper_bound:
-                        if current_location > lower_bound + 60:
-                            # If there's an internal split, it gives us a new upper bound (but don't cut if we're within 60 seconds of the lower bound).
+                        if current_location > lower_bound + 10*60:
+                            # I'm skeptical ... I should really add some reasoning about what part I'm actually IN.
                             print(f"No URL for {part_num} at {current_location}, but reducing upper bound by {to_hms(upper_bound-current_location)}.")
                             upper_bound = current_location - 1
+                            continue
                 # Next, try to use the minute-skip key to get into the range.
                 body = self.driver.find_element(By.TAG_NAME, "body")
                 old_location = current_location
@@ -426,7 +426,7 @@ class Scraper:
                     # Shortcut if we're done.
                     continue
                 if lower_bound < current_location <= upper_bound:
-                    if current_location > lower_bound + 15:
+                    if current_location > lower_bound + 10*60:
                         print(f"No URL for {part_num} at {to_hms(current_location)}, reducing upper bound by {to_hms(upper_bound-current_location)}.")
                         upper_bound = current_location - 1
                 # Next, try to use the small-skip key to get into the new range.
@@ -447,7 +447,7 @@ class Scraper:
                     dir = "forward" if old_location < current_location else "backward"
                     mins = abs(old_location - current_location)
                     print(f"Skipped {dir} {mins}s")
-                if not mp3_searcher.has_url(part_num) and lower_bound < current_location <= upper_bound:
+                if not mp3_searcher.has_url(part_num) and lower_bound+5*60 < current_location <= upper_bound:
                     print(f"No URL for {part_num} at {upper_bound}, reducing to {current_location-1}.")
                     upper_bound = current_location - 1
 
@@ -500,7 +500,8 @@ class Mp3Searcher(object):
         # Get the time of the smallest known chapter remaining, or the total
         # duration, whichever is smaller. Total duration is included to make
         # this work even if no known chapters are left.
-        upper_bound = min(tuple(self.part_to_seconds[p] for p in self.part_to_seconds.keys() if p >= part_num) + (self.expected_duration,))
+        upper_bound = min(tuple(self.part_to_seconds[p]-1 for p in self.part_to_seconds.keys() if p > part_num and self.part_to_seconds[p] > lower_bound)
+                            + (self.expected_duration,))
         # Limit upper bound to 3 hours - parts are normally 30-60 minutes long.
         three_hours = lower_bound + 3*60*60
         return min(three_hours, upper_bound)
@@ -547,7 +548,7 @@ class Mp3Searcher(object):
             if not chapter_dialog_table:
                 raise Exception("Failed to find chapter dialog table")
 
-            chapter_title_elements = chapter_dialog_table.find_elements(By.CLASS_NAME, 'chapter-dialog-row-title')
+            chapter_title_elements = chapter_dialog_table.find_elements(By.CLASS_NAME, 'chapter-dialog-row-button')
             chapter_time_elements = chapter_dialog_table.find_elements(By.CLASS_NAME, 'place-phrase-visual')
 
             if not chapter_title_elements:
@@ -605,7 +606,7 @@ class Mp3Searcher(object):
             if not self.move_forward_chapter():
                 if ch == len(self.chapter_seconds) - 1 and self.current_location >= self.expected_duration - 1: # end of book
                     needs_end = False
-                    print(f"\nChapter skip stopped normally at chapter {ch} / {len(self.chapter_seconds)}", end='')
+                    print(f"Chapter skip stopped normally at chapter {ch} / {len(self.chapter_seconds)}")
                 else:
                     raise Exception(f"ERROR: unexpected end of book at chapter {ch}/{len(self.chapter_seconds)}, at {to_hms(self.current_location)}/{to_hms(self.expected_duration)}")
 
@@ -659,7 +660,10 @@ class Mp3Searcher(object):
         time.sleep(1)
         chapter_table_close = self.driver.find_element(By.CLASS_NAME, 'shibui-shield')
         try:
-            chapter_title_elements = self.driver.find_elements(By.CLASS_NAME, 'chapter-dialog-row-title')
+            # Note that 'chapter-dialog-row' contains '...-button' and
+            # '...-title', the latter is what we would print but can't be
+            # clicked.
+            chapter_title_elements = self.driver.find_elements(By.CLASS_NAME, 'chapter-dialog-row')
             clicked = False
 
             for index, title in enumerate(chapter_title_elements):
@@ -672,12 +676,11 @@ class Mp3Searcher(object):
 
             if not clicked:
                 raise ValueError(f"Couldn't find chapter {desired_chapter} in {len(chapter_title_elements)} chapters")
-
-            return self.get_current_location()
         finally:
             # Close chapter table
             chapter_table_close.click()
-            time.sleep(1)
+        time.sleep(1)
+        return self.get_current_location()
 
     def chapter_containing(self, current_location) -> int:
         candidate = None
@@ -700,16 +703,22 @@ class Mp3Searcher(object):
         current_chapter = self.chapter_containing(current_location)
         # Easy: the chapter containing the lower bound.
         earliest_chapter = self.chapter_containing(lower_bound)
+        earliest_seconds = self.chapter_seconds[earliest_chapter]
         # Scan for the chapter after the lower bound.
         mid_chapter = earliest_chapter + 1
-        while mid_chapter < len(self.chapter_seconds) and self.chapter_seconds[mid_chapter] <= lower_bound + 60:
+        mid_seconds = self.chapter_seconds[mid_chapter] if mid_chapter < len(self.chapter_seconds) else 0
+        while mid_chapter < len(self.chapter_seconds) and self.chapter_seconds[mid_chapter] <= lower_bound:
             mid_chapter += 1
+            mid_seconds = self.chapter_seconds[mid_chapter]
         # And the chapter after (not containing) the upper bound.
         ending_chapter = self.chapter_containing(upper_bound) + 1
-        while ending_chapter < len(self.chapter_seconds) and self.chapter_seconds[ending_chapter] <= upper_bound:
+        ending_seconds = self.chapter_seconds[ending_chapter] if ending_chapter < len(self.chapter_seconds) else 0
+        while ending_chapter < len(self.chapter_seconds) and self.chapter_seconds[ending_chapter] < upper_bound:
             ending_chapter += 1
-        # Best case: there's an easy chapter mark cutting the range in half.
+            ending_seconds = self.chapter_seconds[ending_chapter]
+        print(f"Chapter marks: {earliest_chapter} < {mid_chapter} < {ending_chapter}, times: lb={to_hms(lower_bound)} {to_hms(earliest_seconds)} < {to_hms(mid_seconds)} < {to_hms(ending_seconds)} < ub={to_hms(upper_bound)}")
         if earliest_chapter < mid_chapter < ending_chapter:
+            print(f"Found easy chapter mark {earliest_chapter} < {mid_chapter} < {ending_chapter}")
             return (mid_chapter, self.chapter_seconds[mid_chapter]), current_chapter
         # No easy chapter mark. We will assess three distances:
         # 1. Earliest chapter start to lower bound
