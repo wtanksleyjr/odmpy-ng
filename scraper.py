@@ -286,7 +286,7 @@ class Scraper:
         print("Checking for resumable parts.")
         tmp_dir = download_path
         if loaded_duration:
-            parts = [self.get_part_basename(part_num)+".mp3" for part_num in range(1, max(mp3_searcher.part_to_seconds)+1)]
+            parts = [self.get_part_basename(pn)+".mp3" for pn in range(1, max(mp3_searcher.part_to_seconds)+1)]
 
             # Check that the dir contains sequential part files.
             resumable_parts = [part for part in parts if os.path.isfile(os.path.join(tmp_dir, part))]
@@ -298,9 +298,10 @@ class Scraper:
 
             # Sum the durations of the resumable parts.
             exact_size = 0.0
-            for _, fullname in enumerate(resumable_parts, 1):
+            for part_num, fullname in enumerate(resumable_parts, 1):
                 this_size = convert_metadata.get_mp3_duration(fullname)
                 exact_size += this_size
+                mp3_searcher.register_downloaded_part(part_num, int(exact_size))
 
             # Check that the dir doesn't have any other media files (duration
             # range accounts for inexactness).
@@ -320,6 +321,7 @@ class Scraper:
                 if length:
                     # Use ground truth from metadata rather than adding approximations
                     loaded_duration = convert_metadata.get_total_duration(download_path)
+                    mp3_searcher.register_downloaded_part(part_num, loaded_duration)
                     print(f"{to_hms(loaded_duration)} / {to_hms(mp3_searcher.expected_duration)} - {loaded_duration}/{mp3_searcher.expected_duration} sec  -  {loaded_duration/mp3_searcher.expected_duration*100.0:.2f}%")
                     part_num += 1
                     continue
@@ -327,8 +329,7 @@ class Scraper:
                     raise Exception(f"Download failed for part {part_num}")
 
             # Begin search for the absent part.
-            lower_bound = int(loaded_duration)
-            upper_bound = mp3_searcher.get_upper_bound(part_num, lower_bound)
+            lower_bound, upper_bound = mp3_searcher.set_bounds(part_num)
 
             print(f"Missing part {part_num} between ({to_hms(lower_bound)}, {to_hms(upper_bound)})")
             old_upper_bound = None
@@ -358,8 +359,7 @@ class Scraper:
                     if mp3_searcher.has_url(part_num):
                         print(f"Found part by using play toggle between {lower_bound}, {upper_bound}")
                         continue
-                    print(f"Need more precise search for {upper_bound - lower_bound}s range between {to_hms(lower_bound)}, {upper_bound}")
-                    raise Exception(f"Need more precise search for {upper_bound - lower_bound}s range between {lower_bound}, {upper_bound}")
+                    raise Exception(f"Need more precise search for {to_hms(upper_bound - lower_bound)} range between {to_hms(lower_bound)}, {to_hms(upper_bound)}")
                 old_upper_bound = upper_bound
 
                 # Handle a "collapse" (lower==upper) by trying to search the whole book.
@@ -473,6 +473,10 @@ class Mp3Searcher(object):
     driver: seleniumwire.webdriver.Chrome = field(init=False)
     expected_length: InitVar[str]
     expected_duration: int = field(init=False)
+    lower_part: int = field(init=False)
+    upper_part: int = field(init=False)
+    lower_bound: int = field(init=False)
+    upper_bound: int = field(init=False)
     timeline_current_time: WebElement = field(init=False)
     chapter_table_open: WebElement = field(init=False)
     chapter_previous: WebElement = field(init=False)
@@ -487,6 +491,7 @@ class Mp3Searcher(object):
         self.driver = self.scraper.driver
 
         self.expected_duration = convert_metadata.to_seconds(expected_length)
+        self.part_to_seconds[1] = 0
 
         self.timeline_current_time = self.driver.find_element(By.CLASS_NAME, 'timeline-start-minutes').find_element(By.CLASS_NAME, 'place-phrase-visual')
         self.chapter_table_open = self.driver.find_element(By.CLASS_NAME, 'chapter-bar-title-button')
@@ -496,15 +501,29 @@ class Mp3Searcher(object):
         self.__build_chapters(expected_length)
         self.get_current_location()
 
-    def get_upper_bound(self, part_num: int, lower_bound: int) -> int:
-        # Get the time of the smallest known chapter remaining, or the total
-        # duration, whichever is smaller. Total duration is included to make
-        # this work even if no known chapters are left.
-        upper_bound = min(tuple(self.part_to_seconds[p]-1 for p in self.part_to_seconds.keys() if p > part_num and self.part_to_seconds[p] > lower_bound)
-                            + (self.expected_duration,))
-        # Limit upper bound to 3 hours - parts are normally 30-60 minutes long.
-        three_hours = lower_bound + 3*60*60
-        return min(three_hours, upper_bound)
+    def find_bounds(self, part_num: int) -> tuple[int, int, int, int]:
+        if part_num in self.part_to_seconds:
+            lower_bound = self.part_to_seconds[part_num]
+            lower_part = part_num
+        else:
+            lower_bound, lower_part = max([(self.part_to_seconds[p],p) for p in self.part_to_seconds.keys() if p < part_num]
+                                + [(0,min(self.part_to_seconds.values()))])
+        upper_bound, upper_part = min([(self.part_to_seconds[p]-1,p) for p in self.part_to_seconds.keys() if p > part_num and self.part_to_seconds[p] > lower_bound]
+                            + [(self.expected_duration,max(self.part_to_seconds.keys()))])
+        return lower_bound, upper_bound, lower_part, upper_part
+
+    def set_bounds(self, part_num: int) -> tuple[int, int]:
+        self.lower_bound, self.upper_bound, self.lower_part, self.upper_part = self.find_bounds(part_num)
+
+        return self.lower_bound, self.upper_bound
+
+    def register_downloaded_part(self, part_num: int, total_duration: int):
+        """
+            Called when the end of `part_num` is known, usually due to downloading it.
+        """
+        # We have now "seen" this part at the end of the known duration.
+        self.part_to_seconds[part_num] = total_duration
+        self.lower_bound = total_duration
 
     def __update_seen_parts(self):
         ch = self.chapter_containing(self.current_location)
@@ -610,7 +629,6 @@ class Mp3Searcher(object):
                 else:
                     raise Exception(f"ERROR: unexpected end of book at chapter {ch}/{len(self.chapter_seconds)}, at {to_hms(self.current_location)}/{to_hms(self.expected_duration)}")
 
-        # TODO: honestly this doesn't seem needed, I should test whether it's ever run.
         if needs_end and not self.move_forward_chapter() and self.current_location < self.expected_duration - 1:
             raise Exception(f"ERROR: Failed to find end of book, at {to_hms(self.current_location)} / {to_hms(self.expected_duration)}")
 
