@@ -106,8 +106,11 @@ class Scraper:
             interactive = not self.config.get('sublibrary')
             sublibrary_input.click()
             sublibrary_output = self.driver.find_element(By.CLASS_NAME, 'ui-autocomplete')
-            time.sleep(0.25)
-            subs = sublibrary_output.find_elements(By.TAG_NAME, 'li')
+            subs = WebDriverWait(self.driver, 5).until(
+                    lambda _ : (elts := sublibrary_output.find_elements(By.TAG_NAME, 'li'))
+                                and all((el.is_displayed() and el.is_enabled()) for el in elts)
+                                and elts # return the found list.
+                )
             # Display numbered list of sublibraries and prompt for selection
             idx = None if interactive else find_biggest_match_index(self.config['sublibrary'], [sub.text for sub in subs])
             for index,sub in enumerate(subs):
@@ -258,10 +261,9 @@ class Scraper:
 
         # Go to book listen page
         self.driver.get(selected_title_link)
-        time.sleep(1)
+        toggle_play = WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable((By.CLASS_NAME, 'playback-toggle')))
 
         # Fetch player elements
-        toggle_play = self.driver.find_element(By.CLASS_NAME, 'playback-toggle')
         timeline_length = self.driver.find_element(By.CLASS_NAME, 'timeline-end-minutes').find_element(By.CLASS_NAME, 'place-phrase-visual')
         contents = timeline_length.get_attribute("textContent")
         if not contents:
@@ -358,7 +360,7 @@ class Scraper:
                             print(".", end="")
                         print(" found!")
 
-                        print("Played to: ", end="")
+                        print(f"Played to: {to_hms(mp3_searcher.current_location)}... ", end="")
                         while not mp3_searcher.has_url(part_num) and old_loc+span > mp3_searcher.current_location:
                             mp3_searcher.get_current_location()
                             print(f"{to_hms(mp3_searcher.current_location)}... ", end="")
@@ -559,6 +561,8 @@ class Mp3Searcher(object):
         self.chapter_table_open.click()
         time.sleep(1)
         chapter_table_close = self.driver.find_element(By.CLASS_NAME, 'shibui-shield')
+        # I'd like to remove all of the sleeps, but this Wait doesn't work, it says it's clickable but it's not.
+        # WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable((By.CLASS_NAME, 'shibui-shield')))
         try:
             chapter_dialog_table = self.driver.find_element(By.CLASS_NAME, 'chapter-dialog-table')
             if not chapter_dialog_table:
@@ -617,28 +621,6 @@ class Mp3Searcher(object):
         # And back to where we were.
         self.move_to_chapter(self.chapter_containing(loc))
 
-        """ Disabling chapter scan, should not be needed.
-        print(f"Scanning {len(self.chapter_seconds)} chapters:")
-
-        # Partition the book by skimming through chapters and observing known parts.
-        needs_end = True
-        for ch in range(len(self.chapter_seconds)):
-            # The reader sometimes dumps us into the middle of a chapter.
-            if self.current_location > self.chapter_seconds[ch]:
-                # We're indexing the parts at the start of each chapter, so check.
-                if not self.move_backward_chapter():
-                    raise Exception(f"ERROR: Failed to find beginning of chapter {ch}, should be at {to_hms(self.chapter_seconds[ch])} but no rewind allowed at {to_hms(self.current_location)}")
-            if not self.move_forward_chapter():
-                if ch == len(self.chapter_seconds) - 1: # end of book
-                    needs_end = False
-                    print(f"Chapter skip stopped normally at chapter {ch} / {len(self.chapter_seconds)}")
-                else:
-                    raise Exception(f"ERROR: unexpected end of book at chapter {ch}/{len(self.chapter_seconds)}, at {to_hms(self.current_location)}/{to_hms(self.expected_duration)}")
-
-        if needs_end and not self.move_forward_chapter() and self.current_location < self.expected_duration - 1:
-            raise Exception(f"ERROR: Failed to find end of book, at {to_hms(self.current_location)} / {to_hms(self.expected_duration)}")
-        """
-
         if not self.get_url(1):
             raise Exception(f"ERROR: Failed to find first part of book after loading contents.")
 
@@ -679,26 +661,25 @@ class Mp3Searcher(object):
         self.marked_new_bounds = False
         return False
 
-    def chapter_boundary_closest(self, target: int) -> int|None:
+    def chapter_boundary_closest(self, target: int) -> tuple[int|None,int|None]:
         # Return None if current_location is closest, otherwise return the
         # chapter closer to the target than current_location is.
         current_distance = abs(target - self.current_location)
-        close_chapters = (s for s in self.chapter_seconds if abs(s - target) < current_distance)
+        close_chapters = ((s,ch) for ch,s in enumerate(self.chapter_seconds) if abs(s - target) < current_distance)
         # Define "best" as the chapter closest to the target.
-        best = min(close_chapters, key=lambda s: (abs(s - target), s),
-                      default=None)
-        return best
+        best_s, best_ch = min(close_chapters, key=lambda s: (abs(s[0] - target), s),
+                      default=(None, None))
+        return best_s, best_ch
 
     def move_by_chapters(self, target: int) -> bool:
         start = self.current_location
         # Check if there's a chapter marker we can skip to closer to the target.
-        boundary = self.chapter_boundary_closest(target)
-        if boundary is None:
+        boundary, ch = self.chapter_boundary_closest(target)
+        if boundary is None or ch is None:
             return False
-        ch = self.chapter_containing(boundary)
         self.move_to_chapter(ch)
         if start == self.current_location and not self.has_new_bounds():
-            raise Exception(f"ERROR: Failed to move AT ALL rather than to desired chapter between {to_hms(target)} and original location {to_hms(start)}, currently {to_hms(self.current_location)}")
+            raise Exception(f"ERROR: Failed to move AT ALL rather than to desired chapter at {to_hms(boundary)} between {to_hms(target)} and original location {to_hms(start)}, currently {to_hms(self.current_location)}")
         return True
 
     def move_by_nudges(self, target: int) -> bool:
@@ -733,16 +714,6 @@ class Mp3Searcher(object):
             time.sleep(0.5)
         self.get_current_location()
         return enabled
-
-    """ No longer needed unless I re-enable my chapter scan.
-    def move_backward_chapter(self) -> bool:
-        enabled = self.chapter_previous.is_enabled()
-        if enabled:
-            self.chapter_previous.click()
-            time.sleep(0.5)
-        self.get_current_location()
-        return enabled
-    """
 
     def get_current_location(self) -> int:
         s = self.timeline_current_time.get_attribute("textContent")
@@ -792,6 +763,7 @@ class Mp3Searcher(object):
             desired_chapter -= 1
 
         self.chapter_table_open.click()
+        #chapter_table_close = WebDriverWait(self.driver, 1).until(EC.element_to_be_clickable((By.CLASS_NAME, 'shibui-shield')))
         time.sleep(1)
         chapter_table_close = self.driver.find_element(By.CLASS_NAME, 'shibui-shield')
         try:
