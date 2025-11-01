@@ -264,21 +264,21 @@ class Scraper:
         # Fetch player elements
         toggle_play = self.driver.find_element(By.CLASS_NAME, 'playback-toggle')
         timeline_length = self.driver.find_element(By.CLASS_NAME, 'timeline-end-minutes').find_element(By.CLASS_NAME, 'place-phrase-visual')
-        expected_time = timeline_length.get_attribute("textContent").replace("-", "")
+        contents = timeline_length.get_attribute("textContent")
+        if not contents:
+            raise Exception("Failed to fetch timeline length")
+        expected_time = contents.replace("-", "")
 
         # Allow debugging if one or more fails to fetch. Also turns off "may be None" warnings.
-        fetched = [toggle_play, timeline_length]
-        if None in fetched:
-            raise Exception(f"Failed to fetch one or more player elements: {fetched}")
+        if toggle_play is None:
+            raise Exception(f"Failed to fetch play button: {selected_title_link}")
 
         print(f"Final book should be ~{expected_time} in length.")
 
         mp3_searcher = Mp3Searcher(self, expected_time)
-        current_location = mp3_searcher.get_current_location()
 
         # Download part files
         print("Getting files")
-        current_location = mp3_searcher.get_current_location()
         loaded_duration = convert_metadata.get_total_duration(download_path)
         part_num = 1
 
@@ -335,26 +335,37 @@ class Scraper:
             old_upper_bound = None
             collapse_detected = False
             while not mp3_searcher.has_url(part_num):
-                current_location = mp3_searcher.get_current_location()
+                mp3_searcher.get_current_location()
+                if mp3_searcher.has_new_bounds():
+                    lower_bound, upper_bound = mp3_searcher.set_bounds(part_num)
+                    print(f"Missing part {part_num} between ({to_hms(lower_bound)}, {to_hms(upper_bound)})")
 
                 # Require progress on each iteration.
                 if upper_bound == old_upper_bound:
-                    # One last effort.
-                    old_loc = current_location
-                    span = upper_bound - lower_bound
-                    print(f"Using play toggle between {to_hms(lower_bound)}, {to_hms(upper_bound)} ({span}s), start at {current_location}")
-                    first_try = True
+                    # Otherwise, we can't find the part. Make a heroic effort.
+                    print(f"Locations before repositioning for play: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
+                    if not mp3_searcher.move_to(lower_bound) or not mp3_searcher.get_current_location() <= lower_bound:
+                        raise Exception(f"Couldn't find part {part_num} between ({to_hms(lower_bound)}, {to_hms(upper_bound)}), failed to move {to_hms(mp3_searcher.current_location)} near lower bound.")
+                    if mp3_searcher.has_new_bounds():
+                        continue
+                    old_loc = mp3_searcher.current_location
+                    span = max(upper_bound - mp3_searcher.current_location, 6)
+                    print(f"Using play toggle between {to_hms(mp3_searcher.current_location)} - {to_hms(upper_bound)} ({span}s)...")
                     try:
                         toggle_play.click()
-                        while first_try or (not mp3_searcher.has_url(part_num) and old_loc+span > current_location):
-                            time.sleep(5 if first_try else 1)
-                            current_location = mp3_searcher.get_current_location()
-                            if not first_try and not current_location > old_loc:
-                                print(f"Play toggle might not be responding, location was {to_hms(old_loc)}, now {to_hms(current_location)}")
-                            first_try = False
-                    finally:
-                        if first_try:
+                        print(f"Pressed play, waiting for response: ", end="")
+                        while old_loc == mp3_searcher.get_current_location():
+                            time.sleep(1)
+                            print(".", end="")
+                        print(" found!")
+
+                        print("Played to: ", end="")
+                        while not mp3_searcher.has_url(part_num) and old_loc+span > mp3_searcher.current_location:
+                            mp3_searcher.get_current_location()
+                            print(f"{to_hms(mp3_searcher.current_location)}... ", end="")
                             time.sleep(5)
+                        print()
+                    finally:
                         toggle_play.click()
                     if mp3_searcher.has_url(part_num):
                         print(f"Found part by using play toggle between {lower_bound}, {upper_bound}")
@@ -368,88 +379,18 @@ class Scraper:
                     upper_bound = mp3_searcher.expected_duration
                     collapse_detected = True
 
-                # First, see if there's a chapter mark that is closer to our
-                # range than the current location.
-                chapter_move, current_chapter = mp3_searcher.closest_chapter_mark(lower_bound, upper_bound, current_location)
-                if chapter_move:
-                    desired_chapter, desired_chapter_start = chapter_move
-
-                    current_location = mp3_searcher.move_to_chapter(desired_chapter)
-                    print(f"Clicked to chapter {desired_chapter}/{len(mp3_searcher.chapter_seconds)-1} at {to_hms(current_location)}")
-
-                    if current_location != desired_chapter_start:
-                        if mp3_searcher.chapter_seconds[current_chapter] == desired_chapter_start:
-                            current_chapter = desired_chapter
-                        else:
-                            current_chapter = mp3_searcher.chapter_containing(current_location)
-                    current_chapter_start = mp3_searcher.chapter_seconds[current_chapter]
-
-                    # Sometimes the player dumps us in the middle of a chapter, so go back if it might help.
-                    if current_location > current_chapter_start and current_chapter_start > lower_bound:
-                        mp3_searcher.move_backward_chapter()
-
-                    if mp3_searcher.has_url(part_num):
-                        continue
-                    elif lower_bound <= current_location < upper_bound:
-                        if current_location > lower_bound + 10*60:
-                            # I'm skeptical ... I should really add some reasoning about what part I'm actually IN.
-                            print(f"No URL for {part_num} at {current_location}, but reducing upper bound by {to_hms(upper_bound-current_location)}.")
-                            upper_bound = current_location - 1
-                            continue
-                # Next, try to use the minute-skip key to get into the range.
-                body = self.driver.find_element(By.TAG_NAME, "body")
-                old_location = current_location
-                print(f"Locations: {to_hms(lower_bound)} <= {to_hms(current_location)} < {to_hms(upper_bound)}")
-                if current_location < lower_bound:
-                    # If we can avoid skipping the whole range, skip forward into the range.
-                    if current_location+60 < upper_bound:
-                        print(f"Skipping forward by minutes from {to_hms(current_location)} to {to_hms(upper_bound)}, max {(upper_bound-current_location)//60} skips")
-                        start = current_location
-                        # Try to go a halfway into the range, or a minute in if that is more; but not past the upper bound.
-                        while current_location < min(upper_bound, max( (lower_bound+upper_bound)//2, lower_bound+60)) and not mp3_searcher.has_url(part_num):
-                            # ffwd into the range if you can, without going past it.
-                            body.send_keys(Keys.PAGE_DOWN)
-                            time.sleep(.5)
-                            current_location = mp3_searcher.get_current_location()
-                        print(f"Skipped forward {to_hms(current_location-start)} to {to_hms(current_location)}")
-                elif current_location > upper_bound:
-                    if current_location-60 > lower_bound:
-                        print(f"Skipping backward by minutes from {to_hms(current_location)} to {to_hms(lower_bound)}, max {(current_location-lower_bound)//60} skips")
-                        start = current_location
-                        while current_location-60 > lower_bound and not mp3_searcher.has_url(part_num):
-                            # frewind back to near the start of the range, without going past it.
-                            body.send_keys(Keys.PAGE_UP)
-                            time.sleep(.5)
-                            current_location = mp3_searcher.get_current_location()
-                        print(f"Skipped backward {to_hms(start-current_location)} to {to_hms(current_location)}")
-                if mp3_searcher.has_url(part_num):
-                    # Shortcut if we're done.
+                # First, check the middle of the bounds (divide and conquer).
+                print(f"Locations before halving: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
+                mp3_searcher.move_to( (mp3_searcher.upper_bound+mp3_searcher.lower_bound)//2 )
+                if mp3_searcher.has_new_bounds():
                     continue
-                if lower_bound < current_location <= upper_bound:
-                    if current_location > lower_bound + 10*60:
-                        print(f"No URL for {part_num} at {to_hms(current_location)}, reducing upper bound by {to_hms(upper_bound-current_location)}.")
-                        upper_bound = current_location - 1
-                # Next, try to use the small-skip key to get into the new range.
-                old_location = current_location
-                while current_location <= lower_bound and current_location <= upper_bound-15 and not mp3_searcher.has_url(part_num):
-                    # fwd into the range if you can, without going past it.
-                    body.send_keys(Keys.ARROW_RIGHT)
-                    time.sleep(.5)
-                    current_location = mp3_searcher.get_current_location()
-                while current_location-15 > lower_bound and not mp3_searcher.has_url(part_num):
-                    # rewind back to near the start of the range, without going past it.
-                    body.send_keys(Keys.ARROW_LEFT)
-                    time.sleep(.5)
-                    current_location = mp3_searcher.get_current_location()
-                if mp3_searcher.has_url(part_num):
+                # Next, go close to the lower bound (which should be scanning
+                # backwards, so has a good chance of finding the part).
+                print(f"Locations before finding lower bound: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
+                if not mp3_searcher.move_to( mp3_searcher.lower_bound+15 ) and not mp3_searcher.has_new_bounds():
+                    print(f"No URL for {part_num} found beneath {to_hms(upper_bound)}.")
+                if mp3_searcher.has_new_bounds():
                     continue
-                if old_location != current_location:
-                    dir = "forward" if old_location < current_location else "backward"
-                    mins = abs(old_location - current_location)
-                    print(f"Skipped {dir} {mins}s")
-                if not mp3_searcher.has_url(part_num) and lower_bound+5*60 < current_location <= upper_bound:
-                    print(f"No URL for {part_num} at {upper_bound}, reducing to {current_location-1}.")
-                    upper_bound = current_location - 1
 
         if loaded_duration >= mp3_searcher.expected_duration-1:
             print("Downloaded complete audio")
@@ -472,7 +413,10 @@ class Mp3Searcher(object):
     scraper: Scraper
     driver: seleniumwire.webdriver.Chrome = field(init=False)
     expected_length: InitVar[str]
+    downloaded_duration: int = field(default=0)
     expected_duration: int = field(init=False)
+    marked_new_bounds: bool = field(default=False)
+    part_num: int = field(init=False)
     lower_part: int = field(init=False)
     upper_part: int = field(init=False)
     lower_bound: int = field(init=False)
@@ -485,6 +429,7 @@ class Mp3Searcher(object):
     seen_parts: set[int] = field(default_factory=set)
     chapter_seconds: list[int] = field(default_factory=list)
     part_to_seconds: dict[int, int] = field(default_factory=dict)
+    seconds_to_part: dict[int, int] = field(default_factory=dict)
 
     def __post_init__(self, expected_length: str):
         assert(self.scraper.driver)
@@ -492,6 +437,10 @@ class Mp3Searcher(object):
 
         self.expected_duration = convert_metadata.to_seconds(expected_length)
         self.part_to_seconds[1] = 0
+        self.seconds_to_part[0] = 1
+        self.part_num = 1
+        self.seen_parts.add(1)
+        self.upper_bound = self.lower_bound = self.lower_part = self.upper_part = -1
 
         self.timeline_current_time = self.driver.find_element(By.CLASS_NAME, 'timeline-start-minutes').find_element(By.CLASS_NAME, 'place-phrase-visual')
         self.chapter_table_open = self.driver.find_element(By.CLASS_NAME, 'chapter-bar-title-button')
@@ -501,32 +450,44 @@ class Mp3Searcher(object):
         self.__build_chapters(expected_length)
         self.get_current_location()
 
-    def find_bounds(self, part_num: int) -> tuple[int, int, int, int]:
-        if part_num in self.part_to_seconds:
-            lower_bound = self.part_to_seconds[part_num]
-            lower_part = part_num
-        else:
-            lower_bound, lower_part = max([(self.part_to_seconds[p],p) for p in self.part_to_seconds.keys() if p < part_num]
-                                + [(0,min(self.part_to_seconds.values()))])
-        upper_bound, upper_part = min([(self.part_to_seconds[p]-1,p) for p in self.part_to_seconds.keys() if p > part_num and self.part_to_seconds[p] > lower_bound]
-                            + [(self.expected_duration,max(self.part_to_seconds.keys()))])
-        return lower_bound, upper_bound, lower_part, upper_part
+    def find_bounds_at(self, location: int) -> tuple[tuple[int, int], tuple[int, int]]:
+        lower_part = max([p for p, s in self.part_to_seconds.items()
+                            if s <= location
+                         ], default=0)
+        return self.find_bounds(lower_part)
+
+    def find_bounds(self, part_num: int) -> tuple[tuple[int, int], tuple[int, int]]:
+        lower_bound, lower_part = max([(s,p) for s, p in self.seconds_to_part.items()
+                                          if p <= part_num and s >= self.downloaded_duration
+                                      ],
+                                      default=(self.downloaded_duration,0) )
+        upper_bound, upper_part = min([(s, p) for s, p in self.seconds_to_part.items()
+                                        if s > lower_bound and p > part_num
+                                      ],
+                                      default=(self.expected_duration,max(self.part_to_seconds.keys())))
+        return (lower_bound, upper_bound), (lower_part, upper_part)
 
     def set_bounds(self, part_num: int) -> tuple[int, int]:
-        self.lower_bound, self.upper_bound, self.lower_part, self.upper_part = self.find_bounds(part_num)
+        old_state = (self.part_num, (self.lower_bound, self.upper_bound), (self.lower_part, self.upper_part))
+        new_state = part_num, self.find_bounds(part_num)
+        if old_state == new_state:
+            raise Exception(f"ERROR: Set bounds to the same thing twice: {old_state}")
+        self.part_num, ((self.lower_bound, self.upper_bound), (self.lower_part, self.upper_part)) = new_state
+        self.marked_new_bounds = False
 
         return self.lower_bound, self.upper_bound
 
-    def register_downloaded_part(self, part_num: int, total_duration: int):
+    def register_downloaded_part(self, part_num: int, downloaded_duration: int):
         """
             Called when the end of `part_num` is known, usually due to downloading it.
         """
         # We have now "seen" this part at the end of the known duration.
-        self.part_to_seconds[part_num] = total_duration
-        self.lower_bound = total_duration
+        self.downloaded_duration = downloaded_duration
+        self.part_to_seconds[part_num] = downloaded_duration
+        self.seconds_to_part[downloaded_duration] = part_num
+        self.lower_bound = downloaded_duration
 
     def __update_seen_parts(self):
-        ch = self.chapter_containing(self.current_location)
         self.__requests_to_mp3_files()
         parts = set(self.mp3_urls.keys()) - self.seen_parts
         if parts:
@@ -534,9 +495,36 @@ class Mp3Searcher(object):
             if len(parts) > 1:
                 # This would imply we somehow loaded part URLs but didn't call
                 # this function soon enough to know where they were.
-                print(f"WARNING: Skipped {len(parts)-1} part(s) ({sorted(parts)} except {part}) while looking at chapter {ch}")
-            self.part_to_seconds[part] = self.current_location
+                print(f"WARNING: Skipped {len(parts)-1} part(s) ({sorted(parts)} except {part})")
+            self.__add_part_sighting(part, self.current_location)
+            print(f"Seen part {part} at {to_hms(self.current_location)} in chapter {self.chapter_containing(self.current_location)}")
         self.seen_parts.update(parts)
+
+        # If we found a new URL, accounting complete.
+        if parts:
+            return
+
+        # Check if we already accounted for this exact location in the past.
+        if self.current_location in self.seconds_to_part:
+            return
+
+        # Otherwise try to infer the part number, if possible.
+        second_range, part_range = self.find_bounds_at(self.current_location)
+
+        # If the lower bound is already downloaded, we know for sure it ended
+        # there. (Otherwise I return early, I don't know if I can infer.)
+        if not second_range[0] <= self.downloaded_duration:
+            return
+
+        # Now we know we can't be in the lower part because the lower_bound is
+        # its end, and because we didn't see an URL we can't be in the
+        # part_num. That leaves only the upper part.
+        if part_range[1] - part_range[0] == 1 and part_range[0] < self.part_num < part_range[1]:
+            self.__add_part_sighting(part_range[1], self.current_location)
+
+    def __add_part_sighting(self, part_num: int, location: int):
+        self.seconds_to_part.setdefault(location, part_num)
+        self.part_to_seconds.setdefault(part_num, location)
 
     def __requests_to_mp3_files(self):
         """
@@ -574,19 +562,23 @@ class Mp3Searcher(object):
                 raise Exception("Failed to find chapter title elements")
             if not chapter_time_elements:
                 raise Exception("Failed to find chapter time elements")
+            if len(chapter_title_elements) != len(chapter_time_elements):
+                raise Exception(f"Found {len(chapter_title_elements)} chapter title elements but {len(chapter_time_elements)} chapter time elements")
 
             self.chapter_markers = []
             chapter_times = []
     
-            for elem in chapter_time_elements:
+            for ch, elem in enumerate(chapter_time_elements):
                 if elem.text:
                     chapter_times.append(elem.text)
-                    self.chapter_seconds.append(convert_metadata.to_seconds(elem.text))
+                    try:
+                        self.chapter_seconds.append(convert_metadata.to_seconds(elem.text))
+                    except Exception as e:
+                        raise ValueError(f"Failed to parse chapter time: '{elem.text}' for chapter {ch}") from e
+                else:
+                    raise Exception(f"Found blank chapter time for chapter {ch}")
 
             for index, title in enumerate(chapter_title_elements):
-                # This will end with us in chapter 0.
-                if index == 0:
-                    title.click()
                 # The end of each chapter is the start of the next.
                 end = self.chapter_seconds[index+1] if index+1 < len(self.chapter_seconds) else None
                 self.chapter_markers.append( (title.text, chapter_times[index], end) )
@@ -612,7 +604,8 @@ class Mp3Searcher(object):
         # Find what position we were placed at, also updating tables.
         self.get_current_location()
 
-        print(f"Scanning {len(self.chapter_seconds)} chapters:", end='')
+        print(f"Scanning {len(self.chapter_seconds)} chapters:")
+        self.move_to_chapter(0)
 
         # Partition the book by skimming through chapters and observing known parts.
         needs_end = True
@@ -623,7 +616,7 @@ class Mp3Searcher(object):
                 if not self.move_backward_chapter():
                     raise Exception(f"ERROR: Failed to find beginning of chapter {ch}, should be at {to_hms(self.chapter_seconds[ch])} but no rewind allowed at {to_hms(self.current_location)}")
             if not self.move_forward_chapter():
-                if ch == len(self.chapter_seconds) - 1 and self.current_location >= self.expected_duration - 1: # end of book
+                if ch == len(self.chapter_seconds) - 1: # end of book
                     needs_end = False
                     print(f"Chapter skip stopped normally at chapter {ch} / {len(self.chapter_seconds)}")
                 else:
@@ -649,6 +642,129 @@ class Mp3Searcher(object):
     def get_url(self, part: int) -> str|None:
         return self.mp3_urls.get(part)
 
+    def has_url(self, part_num) -> bool:
+        self.__requests_to_mp3_files()
+        return part_num in self.mp3_urls
+
+    def has_new_bounds(self) -> bool:
+        if self.marked_new_bounds:
+            return True
+        # Assume new unless proven otherwise.
+        self.marked_new_bounds = True
+        if self.has_url(self.part_num):
+            print(f"Found MP3 URL for part {self.part_num}, continuing.")
+            return True
+        bounds, parts = self.find_bounds(self.part_num)
+        if bounds != (self.lower_bound, self.upper_bound):
+            print(f"Found new bounds for part {self.part_num}: {to_hms(bounds[0])} to {to_hms(bounds[1])} (was {to_hms(self.lower_bound)} to {to_hms(self.upper_bound)})")
+            return True
+        if parts != (self.lower_part, self.upper_part):
+            print(f"Found new parts for part {self.part_num}: {parts} (was {self.lower_part}, {self.upper_part})")
+            return True
+        # Proven otherwise!
+        self.marked_new_bounds = False
+        return False
+
+    def chapter_boundary_closest(self, target: int) -> int|None:
+        # Return None if current_location is closest, otherwise return the
+        # chapter closer to the target than current_location is.
+        current_distance = abs(target - self.current_location)
+        close_chapters = (s for s in self.chapter_seconds if abs(s - target) < current_distance)
+        # Define "best" as the chapter closest to the target.
+        best = min(close_chapters, key=lambda s: (abs(s - target), s),
+                      default=None)
+        return best
+
+    def move_by_chapters(self, target: int) -> bool:
+        start = self.current_location
+        if abs(target - start) <= 60:
+            # Let the nudges get us there.
+            return False
+        # Check if there's a chapter marker we can skip to closer to the target.
+        boundary = self.chapter_boundary_closest(target)
+        if boundary is None:
+            return False
+        ch = self.chapter_containing(boundary)
+        print(f"Moving by chapters from {to_hms(start)} to ch {ch} at {to_hms(boundary)}.")
+        self.move_to_chapter(ch)
+        if start == self.current_location and not self.has_new_bounds():
+            raise Exception(f"ERROR: Failed to move AT ALL rather than to desired chapter between {to_hms(target)} and original location {to_hms(start)}, currently {to_hms(self.current_location)}")
+        print(f"Skipped by chapters from {to_hms(start)} to {to_hms(self.current_location)} an amount {to_hms(abs(self.current_location-start))}")
+        return True
+
+    def move_by_nudges(self, target: int) -> bool:
+        # Next, try to use the small-skip key to get into the new range.
+        old_location = self.current_location
+        if -15 < self.current_location - target <= 0:
+            return True
+
+        body = self.driver.find_element(By.TAG_NAME, "body")
+        if self.current_location < target:
+            while self.current_location+15 < target and not self.has_new_bounds():
+                body.send_keys(Keys.ARROW_RIGHT)
+                time.sleep(1)
+                self.get_current_location()
+        elif self.current_location > target:
+            while self.current_location > target and not self.has_new_bounds():
+                body.send_keys(Keys.ARROW_LEFT)
+                time.sleep(1)
+                self.get_current_location()
+        if old_location != self.current_location:
+            dir = "forward" if old_location < self.current_location else "backward"
+            mins = abs(old_location - self.current_location)
+            print(f"Skipped {dir} {to_hms(mins)}")
+            return True
+        if not self.has_new_bounds():
+            return False
+        print(f"Skipped by nudges from {to_hms(old_location)} to {to_hms(self.current_location)}")
+        return True
+
+    def move_by_minutes(self, target: int) -> bool:
+        start = self.current_location
+        if target < self.current_location:
+            if not self.move_backward_minutes(target):
+                return False
+        elif target > self.current_location:
+            if not self.move_forward_minutes(target):
+                return False
+        if start == self.current_location and not self.has_new_bounds():
+            return False
+        print(f"Skipped by minutes from {to_hms(start)} to {to_hms(self.current_location)}, off target by {to_hms(abs(target - self.current_location))}")
+        return True
+
+    def move_backward_minutes(self, target) -> bool:
+        def skippable(self):
+            return self.current_location-30 > target and not self.has_new_bounds()
+        if not skippable(self):
+            return False
+        start = self.current_location
+        body = self.driver.find_element(By.TAG_NAME, "body")
+        while skippable(self):
+            # frewind back to near the start of the range, without going past it.
+            body.send_keys(Keys.PAGE_UP)
+            time.sleep(.5)
+            self.get_current_location()
+        skipped = self.current_location - start
+        if not skipped:
+            return False
+        return True
+
+    def move_forward_minutes(self, target) -> bool:
+        def skippable(self):
+            return self.current_location+30 <= target and not self.has_new_bounds()
+        if not skippable(self):
+            return False
+        start = self.get_current_location()
+        body = self.driver.find_element(By.TAG_NAME, "body")
+        while skippable(self):
+            body.send_keys(Keys.PAGE_DOWN)
+            time.sleep(.5)
+            self.get_current_location()
+        skipped = self.current_location - start
+        if not skipped:
+            return False
+        return True
+
     def move_forward_chapter(self) -> bool:
         enabled = self.chapter_next.is_enabled()
         if enabled:
@@ -672,6 +788,38 @@ class Mp3Searcher(object):
         self.current_location = convert_metadata.to_seconds(s)
         self.__update_seen_parts()
         return self.current_location
+
+    def move_to(self, goal: int) -> bool:
+        start = self.get_current_location()
+        if self.has_new_bounds():
+            return True
+        if 0 <= goal - start < 15:
+            # Already there
+            print(f"Already at {to_hms(self.current_location)} nearly == requested {to_hms(goal)}")
+            return True
+        while not 0 <= goal - self.current_location < 15 and not self.has_new_bounds():
+            substart = self.current_location
+            print(f"Trying to get from {to_hms(substart)} to {to_hms(goal)}")
+            if self.move_by_chapters(goal):
+                pass
+            elif not -30 < goal - self.current_location < 30:
+                self.move_by_minutes(goal)
+            elif not 0 <= goal - self.current_location < 15:
+                self.move_by_nudges(goal)
+            # Handle lack of progress.
+            if substart == self.get_current_location() and not self.has_new_bounds():
+                print(f"Breaking loop due to lack of progress at {to_hms(self.current_location)}.")
+                break
+            else:
+                print(f"Got {to_hms(abs(self.current_location - substart))} closer.")
+        if self.has_new_bounds():
+            return True
+        if start == self.current_location or not 0 <= goal - self.current_location < 15:
+            direction = "forward" if goal - self.current_location > 0 else "backward"
+            print(f"Couldn't get from {to_hms(start)} to {to_hms(goal)}, missed by {to_hms(abs(goal - self.current_location))} {direction}")
+            return False
+        print(f"Moved from {to_hms(start)} to {to_hms(self.current_location)}")
+        return True
 
     def move_to_chapter(self, desired_chapter: int) -> int:
         self.chapter_table_open.click()
@@ -700,64 +848,12 @@ class Mp3Searcher(object):
         time.sleep(1)
         return self.get_current_location()
 
-    def chapter_containing(self, current_location) -> int:
+    def chapter_containing(self, s: int) -> int:
         candidate = None
         # Don't enumerate the last element, it's actually the end of the book.
         for i, start in enumerate(self.chapter_seconds[:-1]):
-            if current_location >= start and current_location < self.chapter_seconds[i+1]:
+            if s >= start and s < self.chapter_seconds[i+1]:
                 candidate = i
         # Account for the end of the book.
         return candidate if candidate is not None else len(self.chapter_seconds) - 2
     
-    def closest_chapter_mark(self, lower_bound: int, upper_bound: int, current_location: int) -> Tuple[Tuple[int, int]|None, int]:
-        """
-            Finds the closest chapter mark to reach into the range near the lower bound.
-
-            Args:
-                lower_bound (int): Lower bound of the chapter marks.
-                upper_bound (int): Upper bound of the chapter marks.
-                current_location (int): Current location in the book.
-        """
-        current_chapter = self.chapter_containing(current_location)
-        # Easy: the chapter containing the lower bound.
-        earliest_chapter = self.chapter_containing(lower_bound)
-        earliest_seconds = self.chapter_seconds[earliest_chapter]
-        # Scan for the chapter after the lower bound.
-        mid_chapter = earliest_chapter + 1
-        mid_seconds = self.chapter_seconds[mid_chapter] if mid_chapter < len(self.chapter_seconds) else 0
-        while mid_chapter < len(self.chapter_seconds) and self.chapter_seconds[mid_chapter] <= lower_bound:
-            mid_chapter += 1
-            mid_seconds = self.chapter_seconds[mid_chapter]
-        # And the chapter after (not containing) the upper bound.
-        ending_chapter = self.chapter_containing(upper_bound) + 1
-        ending_seconds = self.chapter_seconds[ending_chapter] if ending_chapter < len(self.chapter_seconds) else 0
-        while ending_chapter < len(self.chapter_seconds) and self.chapter_seconds[ending_chapter] < upper_bound:
-            ending_chapter += 1
-            ending_seconds = self.chapter_seconds[ending_chapter]
-        print(f"Chapter marks: {earliest_chapter} < {mid_chapter} < {ending_chapter}, times: lb={to_hms(lower_bound)} {to_hms(earliest_seconds)} < {to_hms(mid_seconds)} < {to_hms(ending_seconds)} < ub={to_hms(upper_bound)}")
-        if earliest_chapter < mid_chapter < ending_chapter:
-            print(f"Found easy chapter mark {earliest_chapter} < {mid_chapter} < {ending_chapter}")
-            return (mid_chapter, self.chapter_seconds[mid_chapter]), current_chapter
-        # No easy chapter mark. We will assess three distances:
-        # 1. Earliest chapter start to lower bound
-        earliest_chapter_start = self.chapter_seconds[earliest_chapter]
-        earliest_distance = abs(lower_bound - earliest_chapter_start)
-
-        # 2. Ending chapter start to lower bound
-        ending_chapter_start = self.chapter_seconds[ending_chapter]
-        ending_distance = abs(lower_bound - ending_chapter_start)
-
-        # 3. Current location to lower bound
-        current_distance = abs(lower_bound - current_location)
-        # Simple but sad case: no chapter jump will help.
-        if current_distance <= earliest_distance and current_distance <= ending_distance:
-            return None, current_chapter
-
-        # Otherwise, choose the chapter that's closest to the lower bound.
-        desired_chapter = earliest_chapter if earliest_distance <= ending_distance else ending_chapter
-        return (desired_chapter, self.chapter_seconds[desired_chapter]), current_chapter
-
-    def has_url(self, part_num) -> bool:
-        self.__requests_to_mp3_files()
-        return part_num in self.mp3_urls
-
