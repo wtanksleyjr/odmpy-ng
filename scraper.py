@@ -7,8 +7,6 @@ from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import NoSuchElementException
-from selenium.common.exceptions import ElementClickInterceptedException
 from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 import overdrive_download
@@ -17,6 +15,7 @@ import convert_metadata
 import os
 import time
 import sys
+
 
 def normalize_sublibrary_name(library: str) -> str:
     "Make a token like the api's subsite name from the user-friendly name"
@@ -328,12 +327,12 @@ class Scraper:
                 else:
                     raise Exception(f"Download failed for part {part_num}")
 
-            # Begin search for the absent part.
+            # Begin search for the absent part. Initialize some state.
             lower_bound, upper_bound = mp3_searcher.set_bounds(part_num)
-
             print(f"Missing part {part_num} between ({to_hms(lower_bound)}, {to_hms(upper_bound)})")
             old_upper_bound = None
             collapse_detected = False
+            soft_lower_bound = 15
             while not mp3_searcher.has_url(part_num):
                 mp3_searcher.get_current_location()
                 if mp3_searcher.has_new_bounds():
@@ -379,15 +378,24 @@ class Scraper:
                     upper_bound = mp3_searcher.expected_duration
                     collapse_detected = True
 
-                # First, check the middle of the bounds (divide and conquer).
-                print(f"Locations before halving: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
-                mp3_searcher.move_to( (mp3_searcher.upper_bound+mp3_searcher.lower_bound)//2 )
+                middle = (lower_bound+upper_bound)//2
+                if lower_bound+soft_lower_bound+1 < middle:
+                    # First, go close to the lower bound, the next part should follow it closely.
+                    print(f"Locations before finding data following soft lower bound of {soft_lower_bound}s: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
+                    mp3_searcher.move_to( mp3_searcher.lower_bound + soft_lower_bound + 1 )
+                    soft_lower_bound *= 2
+                    if mp3_searcher.has_new_bounds():
+                        continue
+
+                # Next, divide the range in half, getting a better limit on the size.
+                # This should establish new bounds, so the loop will restart.
+                print(f"Locations before halving to {to_hms(middle)}: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
+                mp3_searcher.move_to( middle )
                 if mp3_searcher.has_new_bounds():
                     continue
-                # Next, go close to the lower bound (which should be scanning
-                # backwards, so has a good chance of finding the part).
-                print(f"Locations before finding lower bound: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
-                if not mp3_searcher.move_to( mp3_searcher.lower_bound+15 ) and not mp3_searcher.has_new_bounds():
+
+                # Next, position ON the lower bound. This should set up for play-toggle to find the part.
+                if not mp3_searcher.move_to( mp3_searcher.lower_bound ) and not mp3_searcher.has_new_bounds():
                     print(f"No URL for {part_num} found beneath {to_hms(upper_bound)}.")
                 if mp3_searcher.has_new_bounds():
                     continue
@@ -497,7 +505,8 @@ class Mp3Searcher(object):
                 # this function soon enough to know where they were.
                 print(f"WARNING: Skipped {len(parts)-1} part(s) ({sorted(parts)} except {part})")
             self.__add_part_sighting(part, self.current_location)
-            print(f"Seen part {part} at {to_hms(self.current_location)} in chapter {self.chapter_containing(self.current_location)}")
+            if self.current_location > self.lower_bound:
+                print(f"(Seen part {part} at {to_hms(self.current_location)} in chapter {self.chapter_containing(self.current_location)})")
         self.seen_parts.update(parts)
 
         # If we found a new URL, accounting complete.
@@ -582,7 +591,6 @@ class Mp3Searcher(object):
                 # The end of each chapter is the start of the next.
                 end = self.chapter_seconds[index+1] if index+1 < len(self.chapter_seconds) else None
                 self.chapter_markers.append( (title.text, chapter_times[index], end) )
-                print(f"Found chapter: '{title.text}' starting {chapter_times[index]}")
         finally:
             # Close chapter table
             chapter_table_close.click()
@@ -602,10 +610,15 @@ class Mp3Searcher(object):
         self.chapter_markers.append( (title, start, end) )
 
         # Find what position we were placed at, also updating tables.
-        self.get_current_location()
-
-        print(f"Scanning {len(self.chapter_seconds)} chapters:")
+        loc = self.get_current_location()
+        # Move to the beginning and end of the book, finding the extreme part numbers.
         self.move_to_chapter(0)
+        self.move_to_chapter(len(self.chapter_seconds) - 1)
+        # And back to where we were.
+        self.move_to_chapter(self.chapter_containing(loc))
+
+        """ Disabling chapter scan, should not be needed.
+        print(f"Scanning {len(self.chapter_seconds)} chapters:")
 
         # Partition the book by skimming through chapters and observing known parts.
         needs_end = True
@@ -624,6 +637,7 @@ class Mp3Searcher(object):
 
         if needs_end and not self.move_forward_chapter() and self.current_location < self.expected_duration - 1:
             raise Exception(f"ERROR: Failed to find end of book, at {to_hms(self.current_location)} / {to_hms(self.expected_duration)}")
+        """
 
         if not self.get_url(1):
             raise Exception(f"ERROR: Failed to find first part of book after loading contents.")
@@ -652,14 +666,14 @@ class Mp3Searcher(object):
         # Assume new unless proven otherwise.
         self.marked_new_bounds = True
         if self.has_url(self.part_num):
-            print(f"Found MP3 URL for part {self.part_num}, continuing.")
+            print(f"(Found MP3 URL for part {self.part_num}, continuing.)")
             return True
         bounds, parts = self.find_bounds(self.part_num)
         if bounds != (self.lower_bound, self.upper_bound):
-            print(f"Found new bounds for part {self.part_num}: {to_hms(bounds[0])} to {to_hms(bounds[1])} (was {to_hms(self.lower_bound)} to {to_hms(self.upper_bound)})")
+            print(f"(Found new bounds for part {self.part_num}: {to_hms(bounds[0])} to {to_hms(bounds[1])} (was {to_hms(self.lower_bound)} to {to_hms(self.upper_bound)}))")
             return True
         if parts != (self.lower_part, self.upper_part):
-            print(f"Found new parts for part {self.part_num}: {parts} (was {self.lower_part}, {self.upper_part})")
+            print(f"(Found new parts for part {self.part_num}: {parts} (was {self.lower_part}, {self.upper_part}))")
             return True
         # Proven otherwise!
         self.marked_new_bounds = False
@@ -677,93 +691,40 @@ class Mp3Searcher(object):
 
     def move_by_chapters(self, target: int) -> bool:
         start = self.current_location
-        if abs(target - start) <= 60:
-            # Let the nudges get us there.
-            return False
         # Check if there's a chapter marker we can skip to closer to the target.
         boundary = self.chapter_boundary_closest(target)
         if boundary is None:
             return False
         ch = self.chapter_containing(boundary)
-        print(f"Moving by chapters from {to_hms(start)} to ch {ch} at {to_hms(boundary)}.")
         self.move_to_chapter(ch)
         if start == self.current_location and not self.has_new_bounds():
             raise Exception(f"ERROR: Failed to move AT ALL rather than to desired chapter between {to_hms(target)} and original location {to_hms(start)}, currently {to_hms(self.current_location)}")
-        print(f"Skipped by chapters from {to_hms(start)} to {to_hms(self.current_location)} an amount {to_hms(abs(self.current_location-start))}")
         return True
 
     def move_by_nudges(self, target: int) -> bool:
-        # Next, try to use the small-skip key to get into the new range.
-        old_location = self.current_location
-        if -15 < self.current_location - target <= 0:
-            return True
-
-        body = self.driver.find_element(By.TAG_NAME, "body")
-        if self.current_location < target:
-            while self.current_location+15 < target and not self.has_new_bounds():
-                body.send_keys(Keys.ARROW_RIGHT)
-                time.sleep(1)
-                self.get_current_location()
-        elif self.current_location > target:
-            while self.current_location > target and not self.has_new_bounds():
-                body.send_keys(Keys.ARROW_LEFT)
-                time.sleep(1)
-                self.get_current_location()
-        if old_location != self.current_location:
-            dir = "forward" if old_location < self.current_location else "backward"
-            mins = abs(old_location - self.current_location)
-            print(f"Skipped {dir} {to_hms(mins)}")
-            return True
-        if not self.has_new_bounds():
-            return False
-        print(f"Skipped by nudges from {to_hms(old_location)} to {to_hms(self.current_location)}")
-        return True
+        return self.__move_primitive(target, left=Keys.ARROW_LEFT, right=Keys.ARROW_RIGHT, bottom=-15, top=0)
 
     def move_by_minutes(self, target: int) -> bool:
-        start = self.current_location
-        if target < self.current_location:
-            if not self.move_backward_minutes(target):
-                return False
-        elif target > self.current_location:
-            if not self.move_forward_minutes(target):
-                return False
-        if start == self.current_location and not self.has_new_bounds():
-            return False
-        print(f"Skipped by minutes from {to_hms(start)} to {to_hms(self.current_location)}, off target by {to_hms(abs(target - self.current_location))}")
-        return True
+        return self.__move_primitive(target, left=Keys.PAGE_UP, right=Keys.PAGE_DOWN, bottom=-60, top=0)
 
-    def move_backward_minutes(self, target) -> bool:
-        def skippable(self):
-            return self.current_location-30 > target and not self.has_new_bounds()
-        if not skippable(self):
-            return False
-        start = self.current_location
-        body = self.driver.find_element(By.TAG_NAME, "body")
-        while skippable(self):
-            # frewind back to near the start of the range, without going past it.
-            body.send_keys(Keys.PAGE_UP)
-            time.sleep(.5)
-            self.get_current_location()
-        skipped = self.current_location - start
-        if not skipped:
-            return False
-        return True
+    def __move_primitive(self, target: int, left: str, right: str, bottom: int, top: int) -> bool:
+        def success(self): return target+bottom < self.current_location <= target+top or self.has_new_bounds()
+        if success(self):
+            return True
 
-    def move_forward_minutes(self, target) -> bool:
-        def skippable(self):
-            return self.current_location+30 <= target and not self.has_new_bounds()
-        if not skippable(self):
-            return False
-        start = self.get_current_location()
         body = self.driver.find_element(By.TAG_NAME, "body")
-        while skippable(self):
-            body.send_keys(Keys.PAGE_DOWN)
-            time.sleep(.5)
+        key = left if self.current_location > target else right
+        while not success(self):
+            old = self.current_location
+            body.send_keys(key)
+            time.sleep(1)
             self.get_current_location()
-        skipped = self.current_location - start
-        if not skipped:
-            return False
-        return True
+            if not success(self) and self.current_location == old:
+                # This implies we're at either end of the book.
+                direction = "left" if key == left else "right"
+                print(f"Failed to move {direction} from {to_hms(self.current_location)} to {to_hms(target)}")
+                return False
+        return self.current_location <= target < self.current_location+15
 
     def move_forward_chapter(self) -> bool:
         enabled = self.chapter_next.is_enabled()
@@ -773,6 +734,7 @@ class Mp3Searcher(object):
         self.get_current_location()
         return enabled
 
+    """ No longer needed unless I re-enable my chapter scan.
     def move_backward_chapter(self) -> bool:
         enabled = self.chapter_previous.is_enabled()
         if enabled:
@@ -780,6 +742,7 @@ class Mp3Searcher(object):
             time.sleep(0.5)
         self.get_current_location()
         return enabled
+    """
 
     def get_current_location(self) -> int:
         s = self.timeline_current_time.get_attribute("textContent")
@@ -797,31 +760,37 @@ class Mp3Searcher(object):
             # Already there
             print(f"Already at {to_hms(self.current_location)} nearly == requested {to_hms(goal)}")
             return True
-        while not 0 <= goal - self.current_location < 15 and not self.has_new_bounds():
-            substart = self.current_location
-            print(f"Trying to get from {to_hms(substart)} to {to_hms(goal)}")
-            if self.move_by_chapters(goal):
-                pass
-            elif not -30 < goal - self.current_location < 30:
-                self.move_by_minutes(goal)
-            elif not 0 <= goal - self.current_location < 15:
-                self.move_by_nudges(goal)
-            # Handle lack of progress.
-            if substart == self.get_current_location() and not self.has_new_bounds():
-                print(f"Breaking loop due to lack of progress at {to_hms(self.current_location)}.")
-                break
-            else:
-                print(f"Got {to_hms(abs(self.current_location - substart))} closer.")
+        # Print one flushed line, then construct the rest.
+        print(f"Moving from {to_hms(start)}:")
+        print(f"   to {to_hms(goal)}", end="", flush=True)
+        # Chapter movement will get as close as possible in one move.
+        if self.move_by_chapters(goal):
+            ch = self.chapter_containing(self.current_location)
+            print(f" to chapter {ch}", end="", flush=True)
+        i = 0
+        while not -15 <= goal - self.current_location < 45 and not self.has_new_bounds():
+            self.move_by_minutes(goal)
+            i += 1
+        if i:
+            print(f" skipping {i} minutes", end="", flush=True)
+        i = 0
+        while not 0 <= goal - self.current_location < 15 and not self.has_new_bounds() and self.move_by_nudges(goal):
+            i += 1
+        if i:
+            print(f" nudging {i} times", end="", flush=True)
+        print(f" to {to_hms(self.current_location)}.", flush=True)
         if self.has_new_bounds():
             return True
-        if start == self.current_location or not 0 <= goal - self.current_location < 15:
+        if not 0 <= goal - self.current_location < 15:
             direction = "forward" if goal - self.current_location > 0 else "backward"
-            print(f"Couldn't get from {to_hms(start)} to {to_hms(goal)}, missed by {to_hms(abs(goal - self.current_location))} {direction}")
-            return False
-        print(f"Moved from {to_hms(start)} to {to_hms(self.current_location)}")
+            raise Exception(f"Couldn't get from {to_hms(start)} to {to_hms(goal)}, now at {to_hms(self.current_location)}, so missed by {to_hms(abs(goal - self.current_location))} {direction}")
         return True
 
     def move_to_chapter(self, desired_chapter: int) -> int:
+        wants_end = (desired_chapter == len(self.chapter_seconds) - 1)
+        if wants_end:
+            desired_chapter -= 1
+
         self.chapter_table_open.click()
         time.sleep(1)
         chapter_table_close = self.driver.find_element(By.CLASS_NAME, 'shibui-shield')
@@ -846,6 +815,8 @@ class Mp3Searcher(object):
             # Close chapter table
             chapter_table_close.click()
         time.sleep(1)
+        if wants_end:
+            self.move_forward_chapter()
         return self.get_current_location()
 
     def chapter_containing(self, s: int) -> int:
