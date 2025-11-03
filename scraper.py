@@ -679,22 +679,24 @@ class Mp3Searcher(object):
             return False
         self.move_to_chapter(ch)
         if start == self.current_location and not self.has_new_bounds():
-            raise Exception(f"ERROR: Failed to move AT ALL rather than to desired chapter at {to_hms(boundary)} between {to_hms(target)} and original location {to_hms(start)}, currently {to_hms(self.current_location)}")
+            raise Exception(f"ERROR: Failed to move AT ALL rather than to desired chapter {ch} at {to_hms(boundary)} between {to_hms(target)} and original location {to_hms(start)}, currently {to_hms(self.current_location)}")
         return True
 
-    def move_by_nudges(self, target: int) -> bool:
-        return self.__move_primitive(target, left=Keys.ARROW_LEFT, right=Keys.ARROW_RIGHT, bottom=-15, top=0)
+    def move_by_nudges(self, target: int, acceptable_bounds: tuple[int,int]) -> bool:
+        return self.__move_primitive(target, left=Keys.ARROW_LEFT, right=Keys.ARROW_RIGHT, bounds=acceptable_bounds)
 
-    def move_by_minutes(self, target: int) -> bool:
-        return self.__move_primitive(target, left=Keys.PAGE_UP, right=Keys.PAGE_DOWN, bottom=-60, top=0)
+    def move_by_minutes(self, target: int, acceptable_bounds: tuple[int,int]) -> bool:
+        return self.__move_primitive(target, left=Keys.PAGE_UP, right=Keys.PAGE_DOWN, bounds=acceptable_bounds)
 
-    def __move_primitive(self, target: int, left: str, right: str, bottom: int, top: int) -> bool:
+    def __move_primitive(self, target: int, left: str, right: str, bounds: tuple[int,int]) -> bool:
+        bottom, top = bounds
         def success(self): return target+bottom < self.current_location <= target+top or self.has_new_bounds()
         if success(self):
             return True
 
         body = self.driver.find_element(By.TAG_NAME, "body")
         key = left if self.current_location > target else right
+        direction = "left" if key == left else "right"
         while not success(self):
             old = self.current_location
             body.send_keys(key)
@@ -702,7 +704,6 @@ class Mp3Searcher(object):
             self.get_current_location()
             if not success(self) and self.current_location == old:
                 # This implies we're at either end of the book.
-                direction = "left" if key == left else "right"
                 print(f"Failed to move {direction} from {to_hms(self.current_location)} to {to_hms(target)}")
                 return False
         return self.current_location <= target < self.current_location+15
@@ -727,32 +728,25 @@ class Mp3Searcher(object):
         start = self.get_current_location()
         if self.has_new_bounds():
             return True
-        if 0 <= goal - start < 15:
+        if goal-15 < start <= goal:
             # Already there
             print(f"Already at {to_hms(self.current_location)} nearly == requested {to_hms(goal)}")
             return True
         # Print one flushed line, then construct the rest.
         print(f"Moving from {to_hms(start)}:")
-        print(f"   to {to_hms(goal)}", end="", flush=True)
+        print(f"   to {to_hms(goal)}", flush=True)
         # Chapter movement will get as close as possible in one move.
         if self.move_by_chapters(goal):
             ch = self.chapter_containing(self.current_location)
-            print(f" to chapter {ch}", end="", flush=True)
-        i = 0
-        while not -15 <= goal - self.current_location < 45 and not self.has_new_bounds():
-            self.move_by_minutes(goal)
-            i += 1
-        if i:
-            print(f" skipping {i} minutes", end="", flush=True)
-        i = 0
-        while not 0 <= goal - self.current_location < 15 and not self.has_new_bounds() and self.move_by_nudges(goal):
-            i += 1
-        if i:
-            print(f" nudging {i} times", end="", flush=True)
+            print(f" to chapter {ch}", flush=True)
+        if not goal-60 < self.current_location <= goal and not self.has_new_bounds():
+            self.move_by_minutes(goal, acceptable_bounds=(-60, 0))
+        if not goal-15 < self.current_location <= goal and not self.has_new_bounds():
+            self.move_by_nudges(goal, acceptable_bounds=(-15, 0))
         print(f" to {to_hms(self.current_location)}.", flush=True)
         if self.has_new_bounds():
             return True
-        if not 0 <= goal - self.current_location < 15:
+        if not goal-15 < self.current_location <= goal:
             direction = "forward" if goal - self.current_location > 0 else "backward"
             raise Exception(f"Couldn't get from {to_hms(start)} to {to_hms(goal)}, now at {to_hms(self.current_location)}, so missed by {to_hms(abs(goal - self.current_location))} {direction}")
         return True
