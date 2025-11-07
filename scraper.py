@@ -733,22 +733,22 @@ class Mp3Searcher(object):
             print(f"Already at {to_hms(self.current_location)} nearly == requested {to_hms(goal)}")
             return True
         # Print one flushed line, then construct the rest.
-        print(f"Moving from {to_hms(start)}:")
-        print(f"   to {to_hms(goal)}", flush=True)
+        print(f"Moving from {to_hms(start)} to {to_hms(goal)}...", flush=True)
         # Chapter movement will get as close as possible in one move.
         if self.move_by_chapters(goal):
             ch = self.chapter_containing(self.current_location)
-            print(f" to chapter {ch}", flush=True)
+            print(f"  by jumping to chapter {ch} at {to_hms(self.current_location)}...", flush=True)
         if not goal-60 < self.current_location <= goal and not self.has_new_bounds():
             self.move_by_minutes(goal, acceptable_bounds=(-60, 0))
         if not goal-15 < self.current_location <= goal and not self.has_new_bounds():
             self.move_by_nudges(goal, acceptable_bounds=(-15, 0))
-        print(f" to {to_hms(self.current_location)}.", flush=True)
         if self.has_new_bounds():
+            print(f" stopping early to handle new bounds!")
             return True
         if not goal-15 < self.current_location <= goal:
             direction = "forward" if goal - self.current_location > 0 else "backward"
             raise Exception(f"Couldn't get from {to_hms(start)} to {to_hms(goal)}, now at {to_hms(self.current_location)}, so missed by {to_hms(abs(goal - self.current_location))} {direction}")
+        print(f" ending move at {to_hms(self.current_location)}, which is {to_hms(abs(goal - self.current_location))} from goal.", flush=True)
         return True
 
     def move_to_chapter(self, desired_chapter: int) -> int:
@@ -758,31 +758,34 @@ class Mp3Searcher(object):
 
         self.chapter_table_open.click()
         #chapter_table_close = WebDriverWait(self.driver, 1).until(EC.element_to_be_clickable((By.CLASS_NAME, 'shibui-shield')))
-        time.sleep(1)
         chapter_table_close = self.driver.find_element(By.CLASS_NAME, 'shibui-shield')
+        #body = self.driver.find_element(By.TAG_NAME, "body")
+        time.sleep(1)
         try:
             # Note that 'chapter-dialog-row' contains '...-button' and
             # '...-title', the latter is what we would print but can't be
             # clicked.
-            chapter_title_elements = self.driver.find_elements(By.CLASS_NAME, 'chapter-dialog-row')
+            chapter_title_elements = self.driver.find_elements(By.CLASS_NAME, 'chapter-dialog-row-button')
             clicked = False
 
-            for index, title in enumerate(chapter_title_elements):
+            if desired_chapter < len(chapter_title_elements):
                 # Go to the beginning of the chapter we need, or the
                 # last chapter if we're trying to get to the end.
-                if index == desired_chapter:
-                    title.click()
-                    clicked = True
-                    break
+                chapter_title_elements[desired_chapter].click()
+                time.sleep(1)
+                clicked = True
 
             if not clicked:
                 raise ValueError(f"Couldn't find chapter {desired_chapter} in {len(chapter_title_elements)} chapters")
         finally:
             # Close chapter table
             chapter_table_close.click()
+            #body.send_keys(Keys.ESCAPE)
         time.sleep(1)
         if wants_end:
+            print("Moving to end of book.")
             self.move_forward_chapter()
+            time.sleep(1)
         return self.get_current_location()
 
     def chapter_containing(self, s: int) -> int:
