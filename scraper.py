@@ -386,21 +386,26 @@ class Scraper:
                     print(f"Locations before finding data following soft lower bound of {soft_lower_bound}s: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
                     mp3_searcher.move_to( mp3_searcher.lower_bound + soft_lower_bound + 1 )
                     soft_lower_bound *= 2
-                    if mp3_searcher.has_new_bounds():
-                        continue
 
-                # Next, divide the range in half, getting a better limit on the size.
-                # This should establish new bounds, so the loop will restart.
-                print(f"Locations before halving to {to_hms(middle)}: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
-                mp3_searcher.move_to( middle )
+                if mp3_searcher.has_new_bounds():
+                    continue
+
+                # Now use divide and conquer, going way into the middle and working back.
+                division_point = upper_bound # will be immediately replaced with midpoint.
+                halvings = 0
+                while not mp3_searcher.has_new_bounds() and division_point > lower_bound+soft_lower_bound + 15:
+                    # Next, divide the range in half, getting a better limit on the size.
+                    division_point = (lower_bound+soft_lower_bound+division_point)//2
+                    halvings += 1
+                    # This should establish new bounds, so the loop will restart.
+                    print(f"Locations before halving #{halvings} to {to_hms(division_point)}: {to_hms(lower_bound)} <= {to_hms(mp3_searcher.current_location)} < {to_hms(upper_bound)}")
+                    mp3_searcher.move_to( division_point )
                 if mp3_searcher.has_new_bounds():
                     continue
 
                 # Next, position ON the lower bound. This should set up for play-toggle to find the part.
                 if not mp3_searcher.move_to( mp3_searcher.lower_bound ) and not mp3_searcher.has_new_bounds():
                     print(f"No URL for {part_num} found beneath {to_hms(upper_bound)}.")
-                if mp3_searcher.has_new_bounds():
-                    continue
 
         if loaded_duration >= mp3_searcher.expected_duration-1:
             print("Downloaded complete audio")
@@ -783,6 +788,7 @@ class Mp3Searcher(object):
             #body.send_keys(Keys.ESCAPE)
         time.sleep(1)
         if wants_end:
+            self.get_current_location()
             print("Moving to end of book.")
             self.move_forward_chapter()
             time.sleep(1)
