@@ -1,6 +1,6 @@
 #!/bin/python3.11
 import os
-import json, sys, string, itertools
+import json, sys, string, itertools, pathlib
 from typing import List, Set
 from mutagen.mp3 import MP3
 
@@ -376,10 +376,10 @@ def main():
         print("Usage: python transform_json.py <ifilename>")
         sys.exit(1)
 
-    filename = sys.argv[1]
+    filename = pathlib.Path(sys.argv[1])
     convert_file(filename)
 
-def convert_file(filename: str):
+def convert_file(filename: pathlib.Path, chapters: list[dict]|None = None):
     dir, _ = os.path.split(filename)
     ofilename = os.path.join(dir, 'metadata.json')
 
@@ -388,17 +388,13 @@ def convert_file(filename: str):
         input_data = data
 
     # Is there an Overdrive chapters list?
-    chapter_file = os.path.join(dir, 'chapters.json')
-    chapters = []
-    if os.path.exists(chapter_file):
-        # Convert to a audiobookfile chapter list.
-        with open(chapter_file) as f:
-            chs = json.load(f)
-        for i, ch in enumerate(chs):
-            title, start, end = ch
-            if not title:
-                title = ''
-            chapters.append({'id': i, 'title': title, 'start': start, 'end': end})
+    if chapters is None:
+        chapter_file = os.path.join(dir, 'chapters.json')
+        if os.path.exists(chapter_file):
+            # Convert to a audiobookfile chapter list.
+            with open(chapter_file) as f:
+                chs = json.load(f)
+                chapters = convert_odm_to_abs_chapters(chs)
 
     output_data = abs_from_pylibby(input_data, ["Autoloaded", "OdmpyNG"])
     if chapters:
@@ -406,6 +402,15 @@ def convert_file(filename: str):
 
     with open(ofilename, 'w') as f:
         json.dump(output_data, f, indent=2)
+
+def convert_odm_to_abs_chapters(chs: list[tuple[str, str, str]]):
+    chapters = []
+    for i, ch in enumerate(chs):
+        title, start, end = ch
+        if not title:
+            title = ''
+        chapters.append({'id': i, 'title': title, 'start': to_seconds(start), 'end': to_seconds(end)})
+    return chapters
 
 if __name__ == "__main__":
     main()

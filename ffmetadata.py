@@ -25,7 +25,7 @@ def write_metafile(tmp_dir, chaptertimes: list, title: str, author: str):
     
     Args:
         tmp_dir (str): Directory where ffmetadata will be saved.
-        chapter_times (list): list of ("chapter title", "h:m:s start", "h:m:s end").
+        chaptertimes (list): list of ("chapter title", "h:m:s start", "h:m:s end").
         title (str): The book or album title.
         author (str): The book or album author.
     """

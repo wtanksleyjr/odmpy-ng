@@ -240,12 +240,18 @@ def main():
 
         print(f"Accessing {book_selection['title']}, ID: {book_selection['id']}")
 
-        # Use scraper.py to download book
-        book_chapter_markers = scraper.get_book(book_selection["link"], tmp_dir)
+        # Leave info in the tmp dir in case of restert.
+        metadata_path = tmp_dir / 'info.json'
+        downloaded_metadata = metadata_path.exists() or overdrive_download.download_thunder_metadata(book_selection["id"], metadata_path)
 
-        if not book_chapter_markers:
+        # Use scraper.py to download book
+        book_info = scraper.get_book(book_selection["link"], tmp_dir)
+
+        if not book_info:
             print("Failed to download")
             continue
+
+        book_chapter_markers, book_duration = book_info
 
         # Reformat returned tuple for easier readability
         book_title = book_selection["title"]
@@ -269,18 +275,18 @@ def main():
 
         if config.get("download_thunder_metadata", 0) or config.get("convert_audiobookshelf_metadata", 0):
             # Both of these require thunder metadata.
-            metadata_path = os.path.abspath(os.path.join(download_path, 'info.json'))
-            chapters_path = os.path.abspath(os.path.join(download_path, 'chapters.json'))
-            with open(chapters_path, 'w') as f:
-                json.dump(book_chapter_markers, f)
-            if overdrive_download.download_thunder_metadata(book_selection["id"], metadata_path):
+            # If we had downloaded the metadata and can copy it into place, use it.
+            if downloaded_metadata:
+                metadata_path = pathlib.Path(shutil.copy(metadata_path, download_path))
+                if not metadata_path.exists():
+                    raise Exception(f"Failed to copy metadata for book {book_title}: tmp dir {tmp_dir}")
                 print("Downloaded json metadata")
                 if config.get("convert_audiobookshelf_metadata", 0):
-                    convert_metadata.convert_file(metadata_path)
+                    chs = convert_metadata.convert_odm_to_abs_chapters(book_chapter_markers)
+                    convert_metadata.convert_file(metadata_path, chs)
                     print("Provided audiobookshelf metadata")
                     if not config.get("download_thunder_metadata", 0):
                         os.unlink(metadata_path)
-                        os.unlink(chapters_path)
                         print("Cleaned up json metadata")
 
         if config.get("skip_reencode", 0):
@@ -315,6 +321,13 @@ def main():
             print(f"Warning: Could not remove temporary directory: {e}")
 
     del scraper
+
+def overdrive_chapters_to_abs(odm_chs: list[tuple[str, int, int]]):
+    chapters = []
+    for i, ch in enumerate(odm_chs):
+        title, start, end = ch
+        chapters.append({'id': i, 'title': title, 'start': start, 'end': end})
+    return chapters
 
 if __name__ == "__main__":
     main()

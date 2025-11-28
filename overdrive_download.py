@@ -87,3 +87,4 @@ def download_thunder_metadata(book_id: int, download_path: str) -> bool:
     else:
         print(f"Failed to download metadata with status code {response.status_code}")
         return False
+

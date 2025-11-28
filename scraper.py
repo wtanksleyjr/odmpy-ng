@@ -245,7 +245,7 @@ class Scraper:
     def get_part_basename(self, part: int) -> str:
         return f"part{part:02d}"
 
-    def get_book(self, selected_title_link: str, download_path: str) -> list[Tuple[int, int]]:
+    def get_book(self, selected_title_link: str, download_path: str) -> Tuple[list[Tuple[str, str, str]], int]:
         """
         Downloads the selected audiobook and associated metadata.
 
@@ -254,7 +254,7 @@ class Scraper:
             download_path (str): Folder path to save the book to.
 
         Returns:
-            chapter_markers
+            chapter_markers, total_duration in seconds
         """
         if not self.driver:
             raise Exception("Driver is not initialized")
@@ -421,7 +421,7 @@ class Scraper:
         if cover_image_url and overdrive_download.download_cover(cover_image_url, cover_path, self.get_cookies(), self.config.get("abort_on_warning", False)):
             print("Downloaded cover")
 
-        return mp3_searcher.chapter_markers
+        return mp3_searcher.chapter_markers, mp3_searcher.chapter_seconds[-1]
 
 @dataclass
 class Mp3Searcher(object):
@@ -445,6 +445,7 @@ class Mp3Searcher(object):
     chapter_seconds: list[int] = field(default_factory=list)
     part_to_seconds: dict[int, int] = field(default_factory=dict)
     seconds_to_part: dict[int, int] = field(default_factory=dict)
+    chapter_markers: list[tuple[str, str, str]] = field(default_factory=list)
 
     def __post_init__(self, expected_length: str):
         assert(self.scraper.driver)
@@ -583,7 +584,6 @@ class Mp3Searcher(object):
             if len(chapter_title_elements) != len(chapter_time_elements):
                 raise Exception(f"Found {len(chapter_title_elements)} chapter title elements but {len(chapter_time_elements)} chapter time elements")
 
-            self.chapter_markers = []
             chapter_times = []
     
             for ch, elem in enumerate(chapter_time_elements):
@@ -598,7 +598,7 @@ class Mp3Searcher(object):
 
             for index, title in enumerate(chapter_title_elements):
                 # The end of each chapter is the start of the next.
-                end = self.chapter_seconds[index+1] if index+1 < len(self.chapter_seconds) else None
+                end = chapter_times[index+1] if index+1 < len(chapter_times) else expected_length
                 self.chapter_markers.append( (title.text, chapter_times[index], end) )
         finally:
             # Close chapter table
@@ -608,15 +608,6 @@ class Mp3Searcher(object):
         self.chapter_seconds.append(self.expected_duration)
 
         print(f"Got {len(chapter_times)} chapters")
-
-        if self.chapter_markers:
-            # Modify the last chapter marker to end at the end of the book.
-            title, start, _ = self.chapter_markers.pop()
-            end = expected_length
-        else:
-            # Book has no chapters, give it a fake one.
-            title, start, end = None, "0:0:0", expected_length
-        self.chapter_markers.append( (title, start, end) )
 
         # Find what position we were placed at, also updating tables.
         loc = self.get_current_location()
@@ -762,9 +753,10 @@ class Mp3Searcher(object):
             desired_chapter -= 1
 
         self.chapter_table_open.click()
-        #chapter_table_close = WebDriverWait(self.driver, 1).until(EC.element_to_be_clickable((By.CLASS_NAME, 'shibui-shield')))
-        chapter_table_close = self.driver.find_element(By.CLASS_NAME, 'shibui-shield')
-        #body = self.driver.find_element(By.TAG_NAME, "body")
+        # NOTE: all of these sometimes work, sometimes don't. Monkeying around indicates ... this is ... something users experience too. WHY?
+        # chapter_table_close = WebDriverWait(self.driver, 1).until(EC.element_to_be_clickable((By.CLASS_NAME, 'shibui-shield')))
+        # chapter_table_close = self.driver.find_element(By.CLASS_NAME, 'shibui-shield')
+        body = self.driver.find_element(By.TAG_NAME, "body")
         time.sleep(1)
         try:
             # Note that 'chapter-dialog-row' contains '...-button' and
@@ -784,8 +776,8 @@ class Mp3Searcher(object):
                 raise ValueError(f"Couldn't find chapter {desired_chapter} in {len(chapter_title_elements)} chapters")
         finally:
             # Close chapter table
-            chapter_table_close.click()
-            #body.send_keys(Keys.ESCAPE)
+            # chapter_table_close.click()
+            body.send_keys(Keys.ESCAPE)
         time.sleep(1)
         if wants_end:
             self.get_current_location()
