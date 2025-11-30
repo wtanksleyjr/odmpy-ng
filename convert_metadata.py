@@ -1,8 +1,9 @@
 #!/bin/python3.11
 import os
-import json, sys, string, itertools, pathlib
+import json, sys, string, itertools, pathlib, shutil
 from typing import List, Set
 from mutagen.mp3 import MP3
+import atomicwrites
 
 # TODO - load canonical data... I shoouldn't have tried to autocorrect using
 # Python's title() function, it's buggy in its original design and no longer
@@ -373,13 +374,31 @@ def to_hms(seconds: int) -> str:
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python transform_json.py <ifilename>")
+        print("Usage: python convert_metadata.py <ipath>")
         sys.exit(1)
 
     filename = pathlib.Path(sys.argv[1])
-    convert_file(filename)
+    with open(filename, 'r') as f:
+        odm_chapters = json.load(f)
+    # Get the folder containing the book
+    dir = filename.parent
+    abs_meta = dir / 'metadata.json'
 
-def convert_file(filename: pathlib.Path, chapters: list[dict]|None = None):
+    with open(abs_meta, 'r') as f:
+        abs_data = json.load(f)
+        abs_data['chapters'] = convert_odm_to_abs_chapters(odm_chapters)
+
+    # make a backup
+    if abs_meta.exists():
+        shutil.move(abs_meta, abs_meta.with_suffix('.bak'))
+    # Replace!
+    with atomicwrites.atomic_write(abs_meta) as f:
+        json.dump(abs_data, f, indent=2)
+    # Move the input file to a backup.
+    if filename.exists():
+        shutil.move(filename, filename.with_suffix('.bak'))
+
+def convert_odm_to_abs(filename: pathlib.Path, chapters: list[dict]|None = None):
     dir, _ = os.path.split(filename)
     ofilename = os.path.join(dir, 'metadata.json')
 

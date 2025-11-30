@@ -72,6 +72,7 @@ def main():
     parser.add_argument("--id", "-i", type=int, help="Libby ID for a single book to download")
     parser.add_argument("--retry", "-r", action="store_true", help="Allow retry of stopped downloads (if left in tmp dir)")
     parser.add_argument("--name-dir", "-n", type=str, help="Fixed subdirectory relative to /downloads to move single downloaded book to")
+    parser.add_argument("--get-metadata", action="store_true", help="Get metadata only for all indicated books, do not download.")
     # These two are mutually exclusive
     exclusive_group = parser.add_mutually_exclusive_group(required=False)
     exclusive_group.add_argument("--library", "-L", type=int, help="Index of library within config to download from")
@@ -179,6 +180,7 @@ def main():
         "tmp-dir": None, # to be filled in later
         "allow-retry": args.retry,
         "id": args.id,
+        "get-metadata": args.get_metadata,
     }
     if "sublibrary" in selected_library:
         scraper_config["sublibrary"] = selected_library["sublibrary"]
@@ -245,13 +247,11 @@ def main():
         downloaded_metadata = metadata_path.exists() or overdrive_download.download_thunder_metadata(book_selection["id"], metadata_path)
 
         # Use scraper.py to download book
-        book_info = scraper.get_book(book_selection["link"], tmp_dir)
+        book_chapter_markers = scraper.get_book(book_selection["link"], tmp_dir, scraper_config)
 
-        if not book_info:
+        if not book_chapter_markers:
             print("Failed to download")
             continue
-
-        book_chapter_markers, book_duration = book_info
 
         # Reformat returned tuple for easier readability
         book_title = book_selection["title"]
@@ -283,7 +283,7 @@ def main():
                 print("Downloaded json metadata")
                 if config.get("convert_audiobookshelf_metadata", 0):
                     chs = convert_metadata.convert_odm_to_abs_chapters(book_chapter_markers)
-                    convert_metadata.convert_file(metadata_path, chs)
+                    convert_metadata.convert_odm_to_abs(metadata_path, chs)
                     print("Provided audiobookshelf metadata")
                     if not config.get("download_thunder_metadata", 0):
                         os.unlink(metadata_path)

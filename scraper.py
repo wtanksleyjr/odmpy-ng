@@ -10,11 +10,14 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 import overdrive_download
-from convert_metadata import to_hms
 import convert_metadata
 import os
 import time
 import sys
+import json
+import pathlib
+from convert_metadata import to_hms
+from atomicwrites import atomic_write
 
 
 def normalize_sublibrary_name(library: str) -> str:
@@ -245,7 +248,7 @@ class Scraper:
     def get_part_basename(self, part: int) -> str:
         return f"part{part:02d}"
 
-    def get_book(self, selected_title_link: str, download_path: str) -> Tuple[list[Tuple[str, str, str]], int]:
+    def get_book(self, selected_title_link: str, download_path: str, config: dict) -> list[Tuple[str, str, str]]:
         """
         Downloads the selected audiobook and associated metadata.
 
@@ -254,7 +257,7 @@ class Scraper:
             download_path (str): Folder path to save the book to.
 
         Returns:
-            chapter_markers, total_duration in seconds
+            chapter_markers
         """
         if not self.driver:
             raise Exception("Driver is not initialized")
@@ -262,6 +265,8 @@ class Scraper:
         # Go to book listen page
         self.driver.get(selected_title_link)
         toggle_play = WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable((By.CLASS_NAME, 'playback-toggle')))
+        if toggle_play is None:
+            raise Exception(f"Failed to fetch play button: {selected_title_link}")
 
         # Fetch player elements
         timeline_length = self.driver.find_element(By.CLASS_NAME, 'timeline-end-minutes').find_element(By.CLASS_NAME, 'place-phrase-visual')
@@ -270,13 +275,15 @@ class Scraper:
             raise Exception("Failed to fetch timeline length")
         expected_time = contents.replace("-", "")
 
-        # Allow debugging if one or more fails to fetch. Also turns off "may be None" warnings.
-        if toggle_play is None:
-            raise Exception(f"Failed to fetch play button: {selected_title_link}")
-
         print(f"Final book should be ~{expected_time} in length.")
 
         mp3_searcher = Mp3Searcher(self, expected_time)
+        if config['get-metadata']:
+            fn = pathlib.Path(download_path) / "chs.json"
+            if not fn.is_file():
+                with atomic_write(fn) as f:
+                    json.dump(mp3_searcher.chapter_markers, f, indent=2)
+            sys.exit(0)
 
         # Download part files
         print("Getting files")
@@ -421,7 +428,7 @@ class Scraper:
         if cover_image_url and overdrive_download.download_cover(cover_image_url, cover_path, self.get_cookies(), self.config.get("abort_on_warning", False)):
             print("Downloaded cover")
 
-        return mp3_searcher.chapter_markers, mp3_searcher.chapter_seconds[-1]
+        return mp3_searcher.chapter_markers
 
 @dataclass
 class Mp3Searcher(object):
