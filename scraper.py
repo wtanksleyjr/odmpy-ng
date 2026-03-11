@@ -635,8 +635,8 @@ class Mp3Searcher(object):
             if last_chapter != ch:
                 last_chapter = self.chapter_containing(offset)
                 ch_title = self.chapter_markers[ch][0]
-                ch_text = f" (Chapter {ch}: {ch_title})"
-            print(f"  {part:02d}: {to_hms(offset)} {ch_text}")
+                ch_text = f" (Chapter index={ch}: '{ch_title}')"
+            print(f" part {part:02d}: {to_hms(offset)} {ch_text}")
 
     def get_url(self, part: int) -> str|None:
         return self.mp3_urls.get(part)
