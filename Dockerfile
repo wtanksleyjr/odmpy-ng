@@ -2,8 +2,7 @@
 # Optionally, pass in a SHA tag in the form "@sha256:123456..." to use
 # a specific version, needed because Selenium's images are updated
 # frequently and even dated tags aren't stable.
-ARG SELENIUM_SHA=""
-FROM selenium/standalone-chrome${SELENIUM_SHA}
+FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
 
 # Switch to root to install dependencies
 USER root
@@ -11,16 +10,17 @@ USER root
 # Set working directory
 WORKDIR /app
 
-# Get python dependency file
+# Install uv inside the build layer
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY requirements.txt .
 
-# Install system packages and python dependencies
+# Install gosu and run uv
 RUN apt-get update && \
-    apt-get install -y python3.12 python3-pip gosu && \
+    apt-get install -y gosu && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
-    pip3 install --upgrade pip && \
-    pip3 install --no-cache-dir -r requirements.txt
+    uv pip install --system --no-cache -r requirements.txt && \
+    rm requirements.txt
 
 # Copy entrypoint
 COPY entrypoint.sh /entrypoint.sh
@@ -29,7 +29,7 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Supress pkg_resources deprecation warning until upstream resolves
-ENV PYTHONWARNINGS="ignore:pkg_resources is deprecated as an API"
+# ENV PYTHONWARNINGS="ignore:pkg_resources is deprecated as an API"
 
 # command to run the app (will accept arguments)
 ENTRYPOINT ["/entrypoint.sh"]

@@ -1,12 +1,13 @@
 #!/bin/python3
 
-import sys, os, time
+import sys
+import os
 import argparse
 import subprocess
 
 from pathlib import Path
 
-def build_docker(download_base: Path, tmp_base: Path) -> dict[str, str]:
+def build_docker(download_base: Path, tmp_base: Path, just_run: bool) -> dict[str, str]:
     # Set up environment for docker run.
     UID = os.getuid()
     GID = os.getgid()
@@ -17,49 +18,17 @@ def build_docker(download_base: Path, tmp_base: Path) -> dict[str, str]:
     env["AUDIOBOOK_FOLDER"] = str(download_base.absolute())
     env["AUDIOBOOK_TMP"] = str(tmp_base.absolute())
     env["COMPOSE_BAKE"] = "true"
-    base_image = "selenium/standalone-chrome"
 
-    # Use a pinned base image, update the pin once a day.
-    needs_build = False
-    full_image = base_image
-    image_pin = Path('.') / 'image.pin'
-    if image_pin.is_file():
-        with image_pin.open('r') as f:
-            full_image = f.read().strip()
-    # If there's no pinned image or it's older than a day, pull the latest.
-    if full_image == base_image or not '@' in full_image or time.time() - image_pin.stat().st_mtime > 24*60*60:
-        print("Pulling base image...")
-        res = subprocess.call(f'docker pull {base_image}', shell=True)
-        if res != 0:
-            print(f"Error pulling {base_image}: {res}")
-            sys.exit(1)
-        # Having pulled the latest image (which may not be changed!), record the digest.
-        digest = subprocess.check_output(
-            [ "docker", "inspect", "--format={{index .RepoDigests 0}}", base_image ],
-            text=True).strip()
-        if not '@' in digest:
-            print(f"Error parsing digest for {base_image}: {digest}")
-            sys.exit(1)
-        if digest != full_image:
-            needs_build = True
-            full_image = digest
-        # Update the pinning file, so timestamp shows.
-        with image_pin.open('w') as f:
-            f.write(digest)
+    if just_run:
+        return env
 
-    # Extract the "pin", which is the @sha256 part of the digest.
-    image_pin = '@' + full_image.split('@')[1]
-    env["SELENIUM_SHA"] = image_pin
+    # This used to be needed due to problems with Selenium, I'm switching to Playwright.
+    print("Building odmpy-ng image...")
+    res = subprocess.call('docker compose build odmpy-ng', shell=True, env=env)
+    if res != 0:
+        print(f"Error building odmpy-ng: {res}")
+        sys.exit(1)
 
-    print(f"Using image: {full_image}.")
-    if needs_build:
-        print("Building odmpy-ng image...")
-        res = subprocess.call('docker compose build odmpy-ng', shell=True, env=env)
-        if res != 0:
-            print(f"Error building odmpy-ng: {res}")
-            sys.exit(1)
-
-    print(image_pin)
     return env
 
 def main():
@@ -78,7 +47,7 @@ def main():
         '-t', '--tmp',
         type=str,
         default=default_tmp,
-        help=f'Directory under which temporary files will be stored (default: AUDIOBOOK_TMP environment variable or dest/tmp)'
+        help='Directory under which temporary files will be stored (default: AUDIOBOOK_TMP environment variable or dest/tmp)'
     )
     args.add_argument(
         'run',
@@ -95,10 +64,9 @@ def main():
     dest = Path(opts.dest)
     tmp = dest / 'tmp' if not opts.tmp else Path(opts.tmp)
 
-    env = build_docker(dest, tmp)
-
+    env = build_docker(dest, tmp, opts.run)
     if opts.run:
-        res = subprocess.call("docker compose run -it --rm odmpy-ng " + ' '.join(opts.run[1:]), shell=True, env=env)
+        res = subprocess.call("docker compose run --remove-orphans --rm -it odmpy-ng " + ' '.join(opts.run[1:]), shell=True, env=env)
         sys.exit(res)
 
 if __name__ == '__main__':

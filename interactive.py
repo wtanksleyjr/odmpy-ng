@@ -10,8 +10,7 @@ import shutil
 import sys
 import pathlib
 import ffmetadata
-from scraper import Scraper
-import overdrive_download
+from scraper import Scraper, Cookies
 import file_conversions
 import convert_metadata
 
@@ -28,6 +27,10 @@ def parse_book_selection_input(userinput: str, books: list) -> list[int]:
     Returns:
         set: Parsed ordered list of selected books
     """
+    userinput.strip()
+    if not userinput:
+        return []
+
     parts_set = set()
     parts = userinput.split(',')
 
@@ -52,14 +55,14 @@ def parse_book_selection_input(userinput: str, books: list) -> list[int]:
 
 def get_book_by_index(index: int, books: list):
     """
-    Retrieves a book dictionary by index from a list of books.
+        Retrieves a book dictionary by index from a list of books.
 
-    Args:
-        index (int): Index in book list
-        books (list): Complete list of books to search
+        Args:
+            index (int): Index in book list
+            books (list): Complete list of books to search
 
-    Returns:
-        dict: Book info for given index
+        Returns:
+            dict: Book info for given index
     """
     return next((b for b in books if b["index"] == index), None)
 
@@ -104,17 +107,20 @@ def main():
     tmp_base = pathlib.Path("/tmp-downloads")
     tmp_base.mkdir(parents=True, exist_ok=True)
 
-    cookies = {}
+    cookies = Cookies([])
     cookie_file = os.path.join(config_dir, "cookies")
     if os.path.exists(cookie_file):
         try:
             with open(cookie_file) as f:
-                cookies = json.load(f)
+                loaded = json.load(f)
+            # Old cookie file used a dict; new is a list so add a version check.
+            if not isinstance(loaded, list) or not loaded or loaded[0] != 1:
+                print("Warning: old cookie file, ignoring.")
+            else:
+                cookies = Cookies.read_loaded(loaded)
         except Exception as e:
-            print(f"Error loading cookies: {e}")
-    # Old cookie file used a list; new is a dict of lists
-    if isinstance(cookies, list):
-        cookies = {}
+            print(f"Warning: error loading cookies, will ignore: {e}")
+            cookies = Cookies([])
 
     print("Config loaded")
 
@@ -186,20 +192,20 @@ def main():
         scraper_config["sublibrary"] = selected_library["sublibrary"]
 
     os.makedirs(downloads_dir, mode=0o755, exist_ok=True)
-        
+
     print(f"Using library: {selected_library['name']}")
 
-    scraper = Scraper(scraper_config)
-    new_cookies = scraper.ensure_login(cookies.get(selected_library["name"], []))
+    scraper = Scraper(scraper_config, cookies)
+    new_cookies: Cookies = scraper.ensure_login()
 
     if not new_cookies:
         print("Sign in failed")
         sys.exit(1)
+    else:
+        print("Sign in successful")
 
-    # Update all of this library's cookies.
-    cookies[selected_library["name"]] = new_cookies
-    with open(cookie_file, "w") as f:
-        json.dump(cookies, f, indent=4)
+    # Update cookie file from the login - may overwrite later, but for now save the login.
+    new_cookies.write_to_file(cookie_file)
 
     # Collect list of loans
     books = scraper.get_loans() # [{"index": 0, "title": "", "author": "", "link": "", "id": 0}]
@@ -217,9 +223,13 @@ def main():
         visible_marker = "->" if this_one else "  "
         print(f"{visible_marker} {book['index']}: {book['title']} - {book['author']} ({book['id']})")
 
-    if not title_selections:
+    if not title_selections and books:
         selections_input = input("Select a title to download (e.g., 0,1,2-3): ")
         title_selections = parse_book_selection_input(selections_input, books)
+
+    if not title_selections:
+        print("No books selected")
+        sys.exit(1)
 
     if args.name_dir and len(title_selections) > 1:
         print("ERROR: Cannot use --name-dir with multiple books")
@@ -243,11 +253,8 @@ def main():
         print(f"Accessing {book_selection['title']}, ID: {book_selection['id']}")
 
         # Leave info in the tmp dir in case of restert.
-        metadata_path = tmp_dir / 'info.json'
-        downloaded_metadata = metadata_path.exists() or overdrive_download.download_thunder_metadata(book_selection["id"], metadata_path)
-
         # Use scraper.py to download book
-        book_chapter_markers = scraper.get_book(book_selection["link"], tmp_dir, scraper_config)
+        book_chapter_markers = scraper.get_book(book_selection, tmp_dir, scraper_config)
 
         if not book_chapter_markers:
             print("Failed to download")
@@ -257,8 +264,6 @@ def main():
         book_title = book_selection["title"]
         book_author = book_selection["author"]
 
-        # Save current cookies for upcoming downloads
-        cookies = scraper.get_cookies()
         filter_table = str.maketrans(dict.fromkeys(string.punctuation))
 
         if args.name_dir:
@@ -276,7 +281,8 @@ def main():
         if config.get("download_thunder_metadata", 0) or config.get("convert_audiobookshelf_metadata", 0):
             # Both of these require thunder metadata.
             # If we had downloaded the metadata and can copy it into place, use it.
-            if downloaded_metadata:
+            metadata_path = tmp_dir / 'info.json'
+            if metadata_path.exists():
                 metadata_path = pathlib.Path(shutil.copy(metadata_path, download_path))
                 if not metadata_path.exists():
                     raise Exception(f"Failed to copy metadata for book {book_title}: tmp dir {tmp_dir}")
@@ -319,6 +325,9 @@ def main():
             print("Temporary files cleaned up")
         except Exception as e:
             print(f"Warning: Could not remove temporary directory: {e}")
+
+    # Update cookie file from the login and all operations.
+    scraper.get_cookies().write_to_file(cookie_file)
 
     del scraper
 

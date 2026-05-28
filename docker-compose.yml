@@ -1,10 +1,9 @@
 services:
   odmpy-ng:
     image: odmpy-ng:dev
+    shm_size: 2gb
     build:
       context: .
-      args:
-        SELENIUM_SHA: ${SELENIUM_SHA}
     environment:
       HOST_UID: ${HOST_UID}
       HOST_GID: ${HOST_GID}

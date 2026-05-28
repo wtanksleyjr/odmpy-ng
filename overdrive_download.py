@@ -1,90 +1,46 @@
-import requests
-import os
 import json
-import convert_metadata
+import pathlib
 from atomicwrites import atomic_write
 
-# Standard headers for web requests to mimic a browser
-headers = {'User-Agent': 'Mozilla/5.0'}
-
-def download_mp3_part(url, part_num, download_path: str, cookies: list) -> int:
+def download_cover(context, cover_url: str, download_path: str, abort=False) -> bool:
     """
-    Downloads an MP3 part from the given URL and saves it to the specified path.
-    
-    Args:
-        url (str): The URL of the MP3 part.
-        part_num (int): The part number, used to name the file.
-        download_path (str): Directory where the MP3 will be saved.
-        cookies (list): List of cookies (dicts) for authentication.
-    
-    Returns:
-        int: Duration of the downloaded MP3 in seconds, or 0 on failure.
+    Downloads a cover image from the given URL using Playwright's shared session context.
     """
-    os.makedirs(download_path, exist_ok=True)
-    cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
-
-    print(f"Downloading part {part_num}")
-    response = requests.get(url, headers=headers, cookies=cookie_dict, stream=True)
-
-    fn = f"part{part_num:02d}.mp3"
-    if response.status_code == 200:
-        with atomic_write(os.path.join(download_path, fn), mode="wb", overwrite=True) as f:
-            for chunk in response.iter_content(1024):
-                f.write(chunk)
-        return convert_metadata.get_mp3_duration(os.path.join(download_path, fn))
-    else:
-        print(f"Failed to download mp3 part with status code {response.status_code}")
-        return 0
-
-
-def download_cover(cover_url: str, download_path: str, cookies: list, abort=False):
-    """
-    Downloads a cover image from the given URL to the specified file path.
-    
-    Args:
-        cover_url (str): URL of the cover image.
-        download_path (str): File path to save the downloaded image.
-        cookies (list): List of cookies (dicts) for authentication.
-        abort (bool): If True, raise an exception on failure.
-    
-    Returns:
-        bool: True if download succeeded, False otherwise.
-    """
-
-    cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
-    response = requests.get(cover_url, headers=headers, cookies=cookie_dict, stream=True)
-    
-    if response.status_code == 200:
-        with open(download_path, 'wb') as f:
-            for chunk in response.iter_content(1024):
-                f.write(chunk)
-        return True
-    else:
-        print(f"Failed to download cover with status code {response.status_code}")
+    try:
+        response = context.request.get(cover_url)
+        if response.ok:
+            with atomic_write(download_path, mode="wb", overwrite=True) as f:
+                f.write(response.body())
+            return True
+        else:
+            print(f"Failed to download cover with status code {response.status}")
+            if abort:
+                raise Exception(f"Cover download failed with status {response.status}")
+            return False
+    except Exception as e:
+        print(f"Error downloading cover: {e}")
         if abort:
-            response.raise_for_status()
+            raise e
         return False
 
-def download_thunder_metadata(book_id: int, download_path: str) -> bool:
+def download_thunder_metadata(context, book_id: str, download_path: pathlib.Path) -> bool:
     """
-    Downloads metadata for a book using the Thunder API and saves it to a file.
-    
-    Args:
-        book_id (int): Unique book ID used by Thunder API.
-        download_path (str): File path to save the metadata JSON.
-    
-    Returns:
-        bool: True if download and write succeeded, False otherwise.
+    Downloads metadata utilizing the Overdrive Thunder API under the current active session.
     """
-    api_url = f"https://thunder.api.overdrive.com/v2/media/{book_id}"
-    response = requests.get(api_url)
-
-    if response.status_code == 200:
-        book_metadata = response.json()
-        with open(download_path, 'w') as f:
-            json.dump(book_metadata, f, ensure_ascii=False, indent=4)
+    if download_path.exists():
         return True
-    else:
-        print(f"Failed to download metadata with status code {response.status_code}")
+
+    api_url = f"https://thunder.api.overdrive.com/v2/media/{book_id}"
+    try:
+        response = context.request.get(api_url)
+        if response.ok:
+            with atomic_write(download_path, overwrite=True) as f:
+                json.dump(response.json(), f, ensure_ascii=False, indent=4)
+            return True
+        else:
+            print(f"Failed to fetch metadata with status {response.status}")
+            return False
+    except Exception as e:
+        print(f"Error downloading metadata: {e}")
         return False
 

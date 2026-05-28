@@ -1,6 +1,11 @@
 #!/bin/python3.11
 import os
-import json, sys, string, itertools, pathlib, shutil
+import json
+import sys
+import string
+import itertools
+import pathlib
+import shutil
 from typing import List, Set
 from mutagen.mp3 import MP3
 import atomicwrites
@@ -15,13 +20,13 @@ def normalize_tag(tag: str) -> str:
         t = string.capwords(t)
     return canonical_tags.get(t, t)
 
-def get_mp3_duration(filepath):
+def get_mp3_duration(filelike) -> int:
     """Returns the duration of an MP3 file in seconds."""
-    mp3 = MP3(filepath)
-    length = mp3.info.length
-    if mp3.info.sketchy:
-        raise ValueError(f"Corrupted MP3 file: {filepath}")
-    return mp3.info.length
+    mp3 = MP3(filelike)
+    length = int(mp3.info.length)
+    if mp3.info.sketchy: # type: ignore[attr-defined]
+        raise ValueError("Corrupted MP3 file")
+    return length
 
 def get_total_duration(directory) -> int:
     """Calculates the total duration of all MP3 files in a directory."""
@@ -367,6 +372,7 @@ def to_seconds(hms: str) -> int:
     return sum(x * 60**i for i, x in enumerate(reversed(parts)))
 
 def to_hms(seconds: int) -> str:
+    seconds = int(seconds)
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
     seconds = seconds % 60
