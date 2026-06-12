@@ -322,15 +322,24 @@ class Scraper:
         for index, block in enumerate(loan_blocks):
             title_element = block.locator('.title-name')
             author_element = block.locator('.title-author')
-            listen_link_locator = block.get_by_role("link", name="Listen now").first
+            listen_link_locator = block.get_by_role("link", name="Listen", exact=False).first
 
             listen_link = None
             book_id = None
+
+            # Short fallback wait per card if not immediately visible (supports delayed rendering)
+            if not listen_link_locator.is_visible():
+                try:
+                    listen_link_locator.wait_for(state="visible", timeout=500)
+                except Exception:
+                    pass
 
             if listen_link_locator.is_visible():
                 listen_link = listen_link_locator.get_attribute('href')
                 if listen_link:
                     book_id = listen_link.split('/')[-1]
+            else:
+                print(f"Book card at index {index} has no listen link or isn't visible")
 
             if not book_id:
                 title_text = title_element.text_content() or "Unknown Title"
