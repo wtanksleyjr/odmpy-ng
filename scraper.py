@@ -197,10 +197,30 @@ class Scraper:
         download_path.mkdir(parents=True, exist_ok=True)
         full_path = os.path.join(download_path, fn)
 
-        print(f"Requesting part {part_num}: ", end="")
-        response = self.context.request.get(url)
+        print(f"Requesting part {part_num}: ", end="", flush=True)
+        
+        max_retries = 4
+        delay = 2
+        response = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = self.context.request.get(url)
+                if response.ok:
+                    break
+                else:
+                    if attempt == 1:
+                        print(f"failed status {response.status}")
+                    print(f"  [Retry {attempt}/{max_retries}] requesting part {part_num}: ", end="", flush=True)
+            except Exception as e:
+                if attempt == 1:
+                    print(f"connection error: {e}")
+                print(f"  [Retry {attempt}/{max_retries}] requesting part {part_num}: ", end="", flush=True)
+            
+            if attempt < max_retries:
+                time.sleep(delay)
+                delay *= 2
 
-        if response.ok:
+        if response and response.ok:
             body = response.body()
             if len(body) == 0:
                 print(f"download found 0 bytes for part {part_num}.")
@@ -214,7 +234,8 @@ class Scraper:
             print(f"downloaded part {part_num} ({to_hms(dur)}s)")
             return dur
         else:
-            print(f"Failed to request mp3 part with status code {response.status}")
+            final_status = response.status if response else "No Response / Exception"
+            print(f"Failed to request mp3 part with status code {final_status}")
             return 0
 
     def _login(self) -> Cookies:
