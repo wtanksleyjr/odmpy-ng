@@ -484,7 +484,7 @@ class Scraper:
                         playback_toggle.click()
                     if mp3_searcher.has_url(part_num):
                         continue
-                    raise Exception(f"Need more precise search between {to_hms(lower_bound)} and {to_hms(upper_bound)}")
+                    raise Exception(f"Need more precise search between {to_hms(lower_bound)} and {to_hms(upper_bound)}, ended at {to_hms(mp3_searcher.current_location)}")
 
                 old_upper_bound = upper_bound
 

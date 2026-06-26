@@ -224,6 +224,7 @@ def main():
         print(f"{visible_marker} {book['index']}: {book['title']} - {book['author']} ({book['id']})")
 
     if not title_selections and books:
+        assert not find_id, f"Libby shows checkout of {find_id} but was not found in books"
         selections_input = input("Select a title to download (e.g., 0,1,2-3): ")
         title_selections = parse_book_selection_input(selections_input, books)
 
