@@ -78,7 +78,7 @@ class Cookies:
 
 class Scraper:
     """Automated Overdrive audiobook downloader."""
-    
+
     def __init__(self, config, cookies: Cookies, headless=True):
         """
         Initializes the scraper with user configuration and boots the Playwright context.
@@ -116,11 +116,11 @@ class Scraper:
             try:
                 url = response.url
                 url_lower = url.lower()
-                
+
                 # Capture jpg images
                 if '.jpg' in url_lower:
                     self.captured_jpg_urls.append(url)
-                    
+
                 # Capture mp3 parts
                 elif ".mp3" in url_lower:
                     req = response.request
@@ -128,7 +128,7 @@ class Scraper:
                     while req.redirected_from is not None:
                         req = req.redirected_from
                         original_url = req.url
-                        
+
                     part_num = None
                     # Case-sensitive "Part" split first
                     if "Part" in original_url:
@@ -137,7 +137,7 @@ class Scraper:
                             part_num = int(part_id)
                         except Exception:
                             pass
-                    
+
                     # Fallback case-insensitive matches
                     if part_num is None:
                         try:
@@ -198,7 +198,7 @@ class Scraper:
         full_path = os.path.join(download_path, fn)
 
         print(f"Requesting part {part_num}: ", end="", flush=True)
-        
+
         max_retries = 4
         delay = 2
         response = None
@@ -215,7 +215,7 @@ class Scraper:
                 if attempt == 1:
                     print(f"connection error: {e}")
                 print(f"  [Retry {attempt}/{max_retries}] requesting part {part_num}: ", end="", flush=True)
-            
+
             if attempt < max_retries:
                 time.sleep(delay)
                 delay *= 2
@@ -465,7 +465,16 @@ class Scraper:
                     print(f"Missing part {part_num} between ({to_hms(lower_bound)}, {to_hms(upper_bound)})")
 
                 if upper_bound == old_upper_bound:
-                    if not mp3_searcher.move_to(lower_bound) or mp3_searcher.get_current_location() > lower_bound + 5:
+                    mp3_searcher.move_to(lower_bound)
+                    if mp3_searcher.get_current_location() > lower_bound + 5:
+                        print(f"Normal seek failed to get near lower bound. Falling back to chapter jump...")
+                        try:
+                            ch_lower = mp3_searcher.chapter_containing(lower_bound)
+                            mp3_searcher.move_to_chapter(ch_lower)
+                        except Exception as e:
+                            print(f"Warning: Fallback chapter jump failed: {e}")
+
+                    if mp3_searcher.get_current_location() > lower_bound + 5:
                         raise Exception("Couldn't seek timeline near lower bound.")
                     if mp3_searcher.has_new_bounds():
                         continue
@@ -484,7 +493,7 @@ class Scraper:
                         playback_toggle.click()
                     if mp3_searcher.has_url(part_num):
                         continue
-                    raise Exception(f"Need more precise search between {to_hms(lower_bound)} and {to_hms(upper_bound)}, ended at {to_hms(mp3_searcher.current_location)}")
+                    raise Exception(f"Need more precise search between {to_hms(lower_bound)} and {to_hms(upper_bound)}, current is {to_hms(mp3_searcher.get_current_location())}")
 
                 old_upper_bound = upper_bound
 
@@ -550,12 +559,12 @@ class Mp3Searcher:
     upper_part: int = field(init=False)
     lower_bound: int = field(init=False)
     upper_bound: int = field(init=False)
-    
+
     timeline_current_time: Any = field(init=False)
     chapter_table_open: Any = field(init=False)
     chapter_previous: Any = field(init=False)
     chapter_next: Any = field(init=False)
-    
+
     mp3_urls: dict[int, str] = field(default_factory=dict)
     seen_parts: set[int] = field(default_factory=set)
     chapter_seconds: list[int] = field(default_factory=list)
@@ -617,7 +626,7 @@ class Mp3Searcher:
                         os.remove(full_p)
                     except Exception as clean_err:
                         print(f"Could not remove corrupt Part {pn} file: {clean_err}")
-        
+
         # Now, register contiguous downloaded parts starting from Part 1
         cumulative = 0
         pn = 1
@@ -625,7 +634,7 @@ class Mp3Searcher:
             cumulative += self.part_durations[pn]
             self.register_downloaded_part(pn, cumulative)
             pn += 1
-        
+
         # In case we have something contiguous registered, update downloaded_duration
         if pn > 1:
             print(f"Starting contiguous resume duration: {to_hms(cumulative)} (up to part {pn-1})")
@@ -720,10 +729,10 @@ class Mp3Searcher:
         loc = self.get_current_location()
         self.move_to_chapter(0)
         self.move_to_chapter(len(self.chapter_seconds) - 1)
-        
+
         # Give a small buffer time for the net response of the last part
         self.page.wait_for_timeout(1000)
-        
+
         self.move_to_chapter(self.chapter_containing(loc))
 
         if not self.get_url(1):
@@ -752,13 +761,13 @@ class Mp3Searcher:
         if self.marked_new_bounds:
             return True
         self.marked_new_bounds = True
-        
+
         if self.has_url(self.part_num):
             return True
         bounds, parts = self.find_bounds(self.part_num)
         if bounds != (self.lower_bound, self.upper_bound) or parts != (self.lower_part, self.upper_part):
             return True
-            
+
         self.marked_new_bounds = False
         return False
 
@@ -786,18 +795,22 @@ class Mp3Searcher:
     def __move_primitive(self, target: int, left: str, right: str, bounds: tuple[int, int]) -> bool:
         bottom, top = bounds
         def success(): return target + bottom < self.current_location <= target + top or self.has_new_bounds()
-        
+
         if success():
             return True
 
         key = left if self.current_location > target else right
         while not success():
-            old = self.current_location
+            # Paranoia: sometimes seems to not work, not sure if focus lost.
+            try:
+                self.page.locator('.playback-toggle').first.focus()
+            except Exception as e:
+                print(f"Warning: Failed to focus playback-toggle: {e}")
+
             self.page.keyboard.press(key)
             self.page.wait_for_timeout(1000)
             self.get_current_location()
-            if not success() and self.current_location == old:
-                return False
+
         return self.current_location <= target < self.current_location + 15
 
     def wait_for_location_near(self, target_seconds: int, timeout_ms: int = 8000) -> int:
@@ -843,17 +856,19 @@ class Mp3Searcher:
             return True
         if goal - 15 < start <= goal:
             return True
-            
-        print(f"Advancing head: {to_hms(start)} -> {to_hms(goal)}")
-        if self.move_by_chapters(goal):
-            ch = self.chapter_containing(self.current_location)
-            print(f"Jumping to Chapter {ch}...")
-            
+
+        self.move_by_chapters(goal)
+
         if not goal - 60 < self.current_location <= goal and not self.has_new_bounds():
             self.move_by_minutes(goal, acceptable_bounds=(-60, 0))
         if not goal - 15 < self.current_location <= goal and not self.has_new_bounds():
             self.move_by_nudges(goal, acceptable_bounds=(-15, 0))
-            
+
+        error = abs(self.current_location - goal)
+        direction = "backward" if self.current_location < goal else "forward"
+        explanation = " due to new chapter bounds" if self.has_new_bounds() else ""
+        error_description = "at commanded position" if goal - 15 < self.current_location <= goal else f"off by {to_hms(error)}s {direction}{explanation}"
+        print(f"Commanded move: {to_hms(start)} -> {to_hms(goal)}, arrived at {to_hms(self.current_location)}, {error_description}")
         return True
 
     def move_to_chapter(self, desired_chapter: int) -> int:
@@ -863,7 +878,7 @@ class Mp3Searcher:
 
         self.chapter_table_open.click()
         self.page.wait_for_timeout(1000)
-        
+
         try:
             chapter_dialog_table = self.page.locator('.chapter-dialog-table').first
             chapter_title_elements = chapter_dialog_table.locator('.chapter-dialog-row-button').all()
