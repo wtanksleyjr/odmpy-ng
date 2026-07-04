@@ -465,21 +465,12 @@ class Scraper:
                     print(f"Missing part {part_num} between ({to_hms(lower_bound)}, {to_hms(upper_bound)})")
 
                 if upper_bound == old_upper_bound:
-                    mp3_searcher.move_to(lower_bound)
-                    if mp3_searcher.get_current_location() > lower_bound + 5:
-                        print(f"Normal seek failed to get near lower bound. Falling back to chapter jump...")
-                        try:
-                            ch_lower = mp3_searcher.chapter_containing(lower_bound)
-                            mp3_searcher.move_to_chapter(ch_lower)
-                        except Exception as e:
-                            print(f"Warning: Fallback chapter jump failed: {e}")
-
-                    if mp3_searcher.get_current_location() > lower_bound + 5:
-                        raise Exception("Couldn't seek timeline near lower bound.")
+                    if not mp3_searcher.move_to(lower_bound) or mp3_searcher.get_current_location() > lower_bound + 5:
+                        print(f"Normal seek failed to get near lower bound. trying anyhow...")
                     if mp3_searcher.has_new_bounds():
                         continue
                     old_loc = mp3_searcher.current_location
-                    span = max(upper_bound - old_loc, 6)
+                    span = max(upper_bound - old_loc, 30)
                     try:
                         playback_toggle.click()
                         while old_loc == mp3_searcher.get_current_location():
@@ -493,7 +484,7 @@ class Scraper:
                         playback_toggle.click()
                     if mp3_searcher.has_url(part_num):
                         continue
-                    raise Exception(f"Need more precise search between {to_hms(lower_bound)} and {to_hms(upper_bound)}, current is {to_hms(mp3_searcher.get_current_location())}")
+                    raise Exception(f"Need more precise search between {to_hms(lower_bound)} and {to_hms(upper_bound)}, am at {to_hms(mp3_searcher.current_location)}")
 
                 old_upper_bound = upper_bound
 
@@ -799,18 +790,22 @@ class Mp3Searcher:
         if success():
             return True
 
+        # Focus before we send keys
+        try:
+            self.page.locator('.playback-toggle').first.focus()
+        except Exception as e:
+            print(f"Warning: Failed to focus playback-toggle: {e}")
+
         key = left if self.current_location > target else right
         while not success():
-            # Paranoia: sometimes seems to not work, not sure if focus lost.
-            try:
-                self.page.locator('.playback-toggle').first.focus()
-            except Exception as e:
-                print(f"Warning: Failed to focus playback-toggle: {e}")
+            old = self.current_location
 
             self.page.keyboard.press(key)
             self.page.wait_for_timeout(1000)
             self.get_current_location()
 
+            if not success() and self.current_location == old:
+                return False
         return self.current_location <= target < self.current_location + 15
 
     def wait_for_location_near(self, target_seconds: int, timeout_ms: int = 8000) -> int:
