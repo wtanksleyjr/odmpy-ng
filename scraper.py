@@ -515,24 +515,93 @@ class Scraper:
 
         print("Downloaded complete audio")
 
-        # Attempt to find and save cover image the old way (by scanning all response URLs)
-        cover_image_url = next(
-            (url for url in self.captured_jpg_urls if 'listen.overdrive.com' in url.lower()),
-            next(
-                (url for url in self.captured_jpg_urls if 'od-cdn.com' in url.lower()),
+        # Fetch the cover image using Overdrive's Thunder API metadata (info.json) and construct Libby's high-res CDN resize URL
+        cover_image_url = None
+        book_id = bookinfo["id"]
+        info_json_path = download_path / 'info.json'
+        
+        if info_json_path.exists():
+            print(f"Reading Thunder API metadata from {info_json_path} to locate high-res cover image...")
+            try:
+                with open(info_json_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                covers = meta.get("covers", {})
+                best_cover_key = None
+                for key in ["cover510Wide", "cover300Wide", "cover150Wide"]:
+                    if key in covers and covers[key].get("href"):
+                        best_cover_key = key
+                        break
+                
+                if best_cover_key:
+                    orig_href = covers[best_cover_key]["href"]
+                    print(f"Found best cover from Thunder metadata ({best_cover_key}): {orig_href}")
+                    
+                    from urllib.parse import urlparse, quote_plus
+                    parsed = urlparse(orig_href)
+                    path = parsed.path
+                    
+                    # Upgrade ImageType-150 or ImageType-400 to ImageType-100 (highest quality original) if possible
+                    if 'ImageType-150' in path:
+                        path = path.replace('ImageType-150', 'ImageType-100').replace('IMG150.JPG', 'IMG100.JPG').replace('img150.jpg', 'img100.jpg')
+                    elif 'ImageType-400' in path:
+                        path = path.replace('ImageType-400', 'ImageType-100').replace('IMG400.JPG', 'IMG100.JPG').replace('img400.jpg', 'img100.jpg')
+                        
+                    # Construct high-resolution Libby CDN resize URL
+                    cover_image_url = f"https://ic.od-cdn.com/resize?type=auto&width=1400&quality=95&force=true&height=1400&url={quote_plus(path)}"
+                    print(f"Constructed Libby CDN high-res cover URL: {cover_image_url}")
+            except Exception as e:
+                print(f"Warning: Failed to extract cover from Thunder metadata JSON: {e}")
+
+        # Fallback to the old method of capturing cover from page network traffic if needed
+        if not cover_image_url:
+            print("Falling back to capturing cover from page network traffic...")
+            captured_url = next(
+                (url for url in self.captured_jpg_urls if 'listen.overdrive.com' in url.lower()),
                 next(
-                    (url for url in self.captured_jpg_urls),
-                    None
+                    (url for url in self.captured_jpg_urls if 'od-cdn.com' in url.lower()),
+                    next(
+                        (url for url in self.captured_jpg_urls),
+                        None
+                    )
                 )
             )
-        )
+            if captured_url:
+                from urllib.parse import urlparse, quote_plus, parse_qs, urlencode, urlunparse
+                try:
+                    parsed = urlparse(captured_url)
+                    path = parsed.path
+                    
+                    if 'ic.od-cdn.com' in parsed.netloc and 'resize' in parsed.path:
+                        query = parse_qs(parsed.query)
+                        query['width'] = ['1400']
+                        query['height'] = ['1400']
+                        query['quality'] = ['95']
+                        if 'url' in query and query['url']:
+                            nested_url = query['url'][0]
+                            if 'ImageType-150' in nested_url:
+                                nested_url = nested_url.replace('ImageType-150', 'ImageType-100').replace('IMG150.JPG', 'IMG100.JPG').replace('img150.jpg', 'img100.jpg')
+                            elif 'ImageType-400' in nested_url:
+                                nested_url = nested_url.replace('ImageType-400', 'ImageType-100').replace('IMG400.JPG', 'IMG100.JPG').replace('img400.jpg', 'img100.jpg')
+                            query['url'] = [nested_url]
+                        new_query = urlencode(query, doseq=True)
+                        cover_image_url = urlunparse(parsed._replace(query=new_query))
+                    else:
+                        if 'ImageType-150' in path:
+                            path = path.replace('ImageType-150', 'ImageType-100').replace('IMG150.JPG', 'IMG100.JPG').replace('img150.jpg', 'img100.jpg')
+                        elif 'ImageType-400' in path:
+                            path = path.replace('ImageType-400', 'ImageType-100').replace('IMG400.JPG', 'IMG100.JPG').replace('img400.jpg', 'img100.jpg')
+                        cover_image_url = f"https://ic.od-cdn.com/resize?type=auto&width=1400&quality=95&force=true&height=1400&url={quote_plus(path)}"
+                except Exception as e:
+                    print(f"Warning: Failed to upgrade captured cover URL: {e}")
+                    cover_image_url = captured_url
+        
         cover_path = os.path.abspath(download_path / "cover.jpg")
-
+        
         if cover_image_url:
-            print(f"Captured cover image URL from network traffic: {cover_image_url}")
+            print(f"Downloading cover image: {cover_image_url}")
             overdrive_download.download_cover(self.context, cover_image_url, cover_path, config.get("abort_on_warning", False))
         else:
-            print("Warning: No candidate cover image URL (.jpg) was captured in network traffic.")
+            print("Warning: No candidate cover image URL (.jpg) was found.")
 
         return mp3_searcher.chapter_markers
 
@@ -899,4 +968,5 @@ class Mp3Searcher:
             if s >= start and s < self.chapter_seconds[i+1]:
                 candidate = i
         return candidate if candidate is not None else len(self.chapter_seconds) - 2
+
 
