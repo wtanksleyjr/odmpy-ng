@@ -50,7 +50,7 @@ def parse_book_selection_input(userinput: str, books: list) -> list[int]:
                 parts_set.add(int(part))
             else:
                 raise ValueError(f"Invalid integer input: {part}")
-            
+
     return sorted(parts_set.intersection(valid_indexes))
 
 def get_book_by_index(index: int, books: list):
@@ -93,10 +93,10 @@ def main():
                 config = json.load(f)
             except json.JSONDecodeError:
                 print(f"Error: Config file '{config_file}' is not valid JSON")
-                sys.exit(1)    
+                sys.exit(1)
     else:
         print(f"Error: Config file '{config_file}' not found")
-        sys.exit(1)    
+        sys.exit(1)
 
     config_dir = os.path.dirname(config_file)
     if not os.path.exists(config_dir):
@@ -172,7 +172,7 @@ def main():
         elif not library_text.isdigit():
             library_index = None
         library_index = int(library_text)
- 
+
     if library_index is None or library_index < 0 or library_index >= len(libraries):
         print("Invalid library selection")
         sys.exit(1)
@@ -247,19 +247,59 @@ def main():
         # Create tmp directory with absolute path, one for each book.
         tmp_dir = tmp_base / book_selection["id"]
         scraper_config["tmp-dir"] = str(tmp_dir)
-        if os.path.exists(tmp_dir) and not scraper_config.get("allow-retry"):
+
+        # Check if progress markers exist to decide on directory cleanup
+        has_markers = False
+        if os.path.exists(tmp_dir):
+            marker_files = [
+                "download_completed.marker",
+                "encode_completed.marker",
+                "concat_completed.marker",
+                "metadata_generated.marker",
+                "metadata_encoded.marker"
+            ]
+            has_markers = any((tmp_dir / marker).exists() for marker in marker_files)
+
+        if os.path.exists(tmp_dir) and not scraper_config.get("allow-retry") and not has_markers:
+            print(f"Removing old temporary directory (no progress markers found): {tmp_dir}")
             shutil.rmtree(tmp_dir)
+
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Accessing {book_selection['title']}, ID: {book_selection['id']}")
 
-        # Leave info in the tmp dir in case of restert.
-        # Use scraper.py to download book
-        book_chapter_markers = scraper.get_book(book_selection, tmp_dir, scraper_config)
+        # Step 1: Download Step (save a marker of its progress, so that the step can be skipped if already run)
+        download_marker = tmp_dir / "download_completed.marker"
+        markers_json = tmp_dir / "chapter_markers.json"
+        book_chapter_markers = None
+
+        if download_marker.exists() and markers_json.exists():
+            print(f"Existing download marker found for '{book_selection['title']}'. Restoring progress...")
+            try:
+                with open(markers_json, "r", encoding="utf-8") as f:
+                    loaded_markers = json.load(f)
+                # Reconstruct list of tuples (str, int, int)
+                book_chapter_markers = [tuple(item) for item in loaded_markers]
+                print(f"Successfully restored {len(book_chapter_markers)} chapter markers.")
+            except Exception as e:
+                print(f"Warning: Failed to load chapter markers from {markers_json}: {e}. Will re-download.")
+                book_chapter_markers = None
 
         if not book_chapter_markers:
-            print("Failed to download")
-            continue
+            print(f"Downloading book '{book_selection['title']}'...")
+            book_chapter_markers = scraper.get_book(book_selection, tmp_dir, scraper_config)
+            if not book_chapter_markers:
+                print("Failed to download book.")
+                continue # Do not clean up tmp_dir so user can retry
+
+            # Save progress markers
+            try:
+                with open(markers_json, "w", encoding="utf-8") as f:
+                    json.dump(book_chapter_markers, f, ensure_ascii=False, indent=4)
+                download_marker.touch()
+                print("Download progress saved.")
+            except Exception as e:
+                print(f"Warning: Could not save download progress markers: {e}")
 
         # Reformat returned tuple for easier readability
         book_title = book_selection["title"]
@@ -272,8 +312,8 @@ def main():
         else:
             # Filter to remove punctuation from book title/author for file path
             download_path = os.path.abspath(os.path.join(
-                downloads_dir, 
-                book_author.translate(filter_table), 
+                downloads_dir,
+                book_author.translate(filter_table),
                 book_title.translate(filter_table)
             ))
 
@@ -300,30 +340,114 @@ def main():
             # Just copy everything to the dest.
             source, dest = pathlib.Path(tmp_dir), pathlib.Path(download_path)
             for p in source.iterdir():
-                shutil.copy(p, dest)
+                if p.is_file() and not p.name.endswith(".marker") and p.name != "chapter_markers.json":
+                    shutil.copy(p, dest)
         else:
-            if file_conversions.encode_aac_multiprocessing(tmp_dir, tmp_dir, config.get("low_quality_encode", 0), config.get("encoder_count", 4)):
-                print("Converted all files to AAC M4B")
+            # Step 2: Encode MP3 files to AAC M4B
+            encode_marker = tmp_dir / "encode_completed.marker"
+            if encode_marker.exists():
+                print("Encoding to AAC already completed. Skipping encoding step.")
+            else:
+                print("Converting all files to AAC M4B...")
+                encode_success = file_conversions.encode_aac_multiprocessing(
+                    tmp_dir, tmp_dir, config.get("low_quality_encode", 0), config.get("encoder_count", 4)
+                )
+                if not encode_success:
+                    print("ERROR: Converting all files to AAC M4B failed.")
+                    continue # Do NOT clean up tmp_dir so we can recover / retry
 
-            if file_conversions.concat_m4b(tmp_dir, tmp_dir, 'temp.m4b'):
-                print("Converted to single M4B")
+                try:
+                    encode_marker.touch()
+                    print("Encoding progress saved.")
+                except Exception as e:
+                    print(f"Warning: Could not save encoding progress marker: {e}")
 
-            print("Generating metadata")
-            ffmetadata.write_metafile(tmp_dir, book_chapter_markers, book_title, book_author)
+            # Clean up original MP3 files (old step) AFTER encoding succeeds (no step loses info early)
+            for mp3_file in tmp_dir.glob("*.mp3"):
+                try:
+                    os.unlink(mp3_file)
+                    print(f"Cleaned up original MP3 file: {mp3_file.name}")
+                except Exception as e:
+                    print(f"Warning: Could not remove MP3 file {mp3_file.name}: {e}")
 
-            print("Adding metadata to audiobook")
+            # Step 3: Concatenate AAC files to temp.m4b
+            concat_marker = tmp_dir / "concat_completed.marker"
+            if concat_marker.exists() and (tmp_dir / "temp.m4b").exists():
+                print("Concatenation already completed. Skipping concatenation step.")
+            else:
+                print("Converting to single M4B (concatenating)...")
+                # Remove any partial temp.m4b from a previous failed run before starting concatenation
+                temp_m4b = tmp_dir / "temp.m4b"
+                if temp_m4b.exists():
+                    try:
+                        os.unlink(temp_m4b)
+                    except Exception:
+                        pass
+
+                concat_success = file_conversions.concat_m4b(tmp_dir, tmp_dir, 'temp.m4b')
+                if not concat_success:
+                    print("ERROR: Converted to single M4B failed.")
+                    continue # Do NOT clean up tmp_dir so we can retry concat without re-download/re-encode!
+
+                try:
+                    concat_marker.touch()
+                    print("Concatenation progress saved.")
+                except Exception as e:
+                    print(f"Warning: Could not save concatenation progress marker: {e}")
+
+            # Clean up individual part AAC/M4B files (old step) AFTER concatenation succeeds
+            for part_file in list(tmp_dir.glob("*.m4b")) + list(tmp_dir.glob("*.m4a")):
+                if part_file.name != "temp.m4b" and part_file.is_file():
+                    try:
+                        os.unlink(part_file)
+                        print(f"Cleaned up individual part file: {part_file.name}")
+                    except Exception as e:
+                        print(f"Warning: Could not remove individual part file {part_file.name}: {e}")
+
+            # Step 4: Generate metadata file
+            metadata_marker = tmp_dir / "metadata_generated.marker"
+            if metadata_marker.exists() and (tmp_dir / "ffmetadata").exists():
+                print("Metadata file generation already completed. Skipping.")
+            else:
+                print("Generating metadata...")
+                try:
+                    ffmetadata.write_metafile(tmp_dir, book_chapter_markers, book_title, book_author)
+                    metadata_marker.touch()
+                except Exception as e:
+                    print(f"ERROR: Generating metadata failed: {e}")
+                    continue # Do NOT clean up tmp_dir
+
+            # Step 5: Add metadata to audiobook
+            metadata_encoded_marker = tmp_dir / "metadata_encoded.marker"
             cover_path = os.path.abspath(os.path.join(tmp_dir, "cover.jpg"))
-
             sanitized_title = book_title.translate(filter_table).replace(" ", "")
             output_file = os.path.abspath(os.path.join(download_path, sanitized_title + ".m4b"))
 
-            if file_conversions.encode_metadata(tmp_dir, "temp.m4b", output_file, "ffmetadata", cover_path):
-                print("Finished file created")
+            if metadata_encoded_marker.exists() and os.path.exists(output_file):
+                print("Adding metadata to audiobook already completed. Skipping.")
+            else:
+                print("Adding metadata to audiobook...")
+                if os.path.exists(output_file):
+                    try:
+                        os.unlink(output_file)
+                    except Exception:
+                        pass
 
-        # Clean up temporary files
+                encode_meta_success = file_conversions.encode_metadata(tmp_dir, "temp.m4b", output_file, "ffmetadata", cover_path)
+                if not encode_meta_success:
+                    print("ERROR: Adding metadata to audiobook failed.")
+                    continue # Do NOT clean up tmp_dir
+
+                try:
+                    metadata_encoded_marker.touch()
+                    print("Finished file created successfully.")
+                except Exception as e:
+                    print(f"Warning: Could not save final metadata progress marker: {e}")
+
+        # Clean up temporary files only when the entire pipeline for this book is completed successfully
         try:
             shutil.rmtree(tmp_dir)
-            print("Temporary files cleaned up")
+            print("Temporary files cleaned up successfully")
         except Exception as e:
             print(f"Warning: Could not remove temporary directory: {e}")
 
