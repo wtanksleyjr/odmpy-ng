@@ -23,7 +23,7 @@ def download_cover(context, cover_url: str, download_path: str, abort=False) -> 
         except Exception as e:
             print(f"Cover download attempt {attempt}/{max_retries} threw connection exception: {e}")
             last_error = e
-        
+
         if attempt < max_retries:
             time.sleep(delay)
             delay *= 2
@@ -63,7 +63,7 @@ def download_thunder_metadata(context, book_id: str, download_path: pathlib.Path
                 print(f"Metadata download attempt {attempt}/{max_retries} failed with status {response.status}")
         except Exception as e:
             print(f"Metadata download attempt {attempt}/{max_retries} threw connection exception: {e}")
-        
+
         if attempt < max_retries:
             time.sleep(delay)
             delay *= 2

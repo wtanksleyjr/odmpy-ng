@@ -16,7 +16,7 @@ COPY requirements.txt .
 
 # Install gosu and run uv
 RUN apt-get update && \
-    apt-get install -y gosu && \
+    apt-get install -y gosu ffmpeg && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     uv pip install --system --no-cache -r requirements.txt && \

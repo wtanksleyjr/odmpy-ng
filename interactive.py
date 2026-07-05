@@ -319,74 +319,93 @@ def main():
 
         os.makedirs(download_path, exist_ok=True)
 
-        if config.get("download_thunder_metadata", 0) or config.get("convert_audiobookshelf_metadata", 0):
-            # Both of these require thunder metadata.
-            # If we had downloaded the metadata and can copy it into place, use it.
-            metadata_path = tmp_dir / 'info.json'
-            if metadata_path.exists():
-                metadata_path = pathlib.Path(shutil.copy(metadata_path, download_path))
-                if not metadata_path.exists():
-                    raise Exception(f"Failed to copy metadata for book {book_title}: tmp dir {tmp_dir}")
-                print("Downloaded json metadata")
-                if config.get("convert_audiobookshelf_metadata", 0):
-                    chs = convert_metadata.convert_odm_to_abs_chapters(book_chapter_markers)
-                    convert_metadata.convert_odm_to_abs(metadata_path, chs)
-                    print("Provided audiobookshelf metadata")
-                    if not config.get("download_thunder_metadata", 0):
-                        os.unlink(metadata_path)
-                        print("Cleaned up json metadata")
+        if config.get("convert_audiobookshelf_metadata", 0):
+            chs = convert_metadata.convert_odm_to_abs_chapters(book_chapter_markers)
+            abs_metadata_path = pathlib.Path(download_path) / 'metadata.json'
 
-        if config.get("skip_reencode", 0):
+            tmp_info_path = tmp_dir / 'info.json'
+            if tmp_info_path.exists():
+                temp_info_path = pathlib.Path(shutil.copy(tmp_info_path, download_path))
+                convert_metadata.convert_odm_to_abs(temp_info_path, chs, abs_metadata_path, title=book_title, author=book_author)
+                if config.get("download_thunder_metadata", 0):
+                    print("Downloaded json metadata")
+                else:
+                    os.unlink(temp_info_path)
+            else:
+                convert_metadata.convert_odm_to_abs(None, chs, abs_metadata_path, title=book_title, author=book_author)
+
+            print("Provided audiobookshelf metadata")
+        elif config.get("download_thunder_metadata", 0):
+            tmp_info_path = tmp_dir / 'info.json'
+            if tmp_info_path.exists():
+                shutil.copy(tmp_info_path, download_path)
+                print("Downloaded json metadata")
+
+        skip_reencode = config.get("skip_reencode", 0) or config.get("skip_encoding", 0)
+        is_mka = (config.get("encoding") == "mka")
+
+        if skip_reencode:
             # Just copy everything to the dest.
             source, dest = pathlib.Path(tmp_dir), pathlib.Path(download_path)
             for p in source.iterdir():
                 if p.is_file() and not p.name.endswith(".marker") and p.name != "chapter_markers.json":
                     shutil.copy(p, dest)
         else:
-            # Step 2: Encode MP3 files to AAC M4B
-            encode_marker = tmp_dir / "encode_completed.marker"
-            if encode_marker.exists():
-                print("Encoding to AAC already completed. Skipping encoding step.")
+            # Determine format and output file extension
+            ext = ".mka" if is_mka else ".m4b"
+            temp_filename = "temp.mka" if is_mka else "temp.m4b"
+
+            # Step 2: Encode MP3 files to AAC M4B (skip if mka)
+            if is_mka:
+                print("MKA mode selected. Skipping AAC encoding step to preserve original MP3 streams.")
             else:
-                print("Converting all files to AAC M4B...")
-                encode_success = file_conversions.encode_aac_multiprocessing(
-                    tmp_dir, tmp_dir, config.get("low_quality_encode", 0), config.get("encoder_count", 4)
-                )
-                if not encode_success:
-                    print("ERROR: Converting all files to AAC M4B failed.")
-                    continue # Do NOT clean up tmp_dir so we can recover / retry
+                encode_marker = tmp_dir / "encode_completed.marker"
+                if encode_marker.exists():
+                    print("Encoding to AAC already completed. Skipping encoding step.")
+                else:
+                    print("Converting all files to AAC M4B...")
+                    encode_success = file_conversions.encode_aac_multiprocessing(
+                        tmp_dir, tmp_dir, config.get("low_quality_encode", 0), config.get("encoder_count", 4)
+                    )
+                    if not encode_success:
+                        print("ERROR: Converting all files to AAC M4B failed.")
+                        continue # Do NOT clean up tmp_dir so we can recover / retry
 
-                try:
-                    encode_marker.touch()
-                    print("Encoding progress saved.")
-                except Exception as e:
-                    print(f"Warning: Could not save encoding progress marker: {e}")
-
-            # Clean up original MP3 files (old step) AFTER encoding succeeds (no step loses info early)
-            for mp3_file in tmp_dir.glob("*.mp3"):
-                try:
-                    os.unlink(mp3_file)
-                    print(f"Cleaned up original MP3 file: {mp3_file.name}")
-                except Exception as e:
-                    print(f"Warning: Could not remove MP3 file {mp3_file.name}: {e}")
-
-            # Step 3: Concatenate AAC files to temp.m4b
-            concat_marker = tmp_dir / "concat_completed.marker"
-            if concat_marker.exists() and (tmp_dir / "temp.m4b").exists():
-                print("Concatenation already completed. Skipping concatenation step.")
-            else:
-                print("Converting to single M4B (concatenating)...")
-                # Remove any partial temp.m4b from a previous failed run before starting concatenation
-                temp_m4b = tmp_dir / "temp.m4b"
-                if temp_m4b.exists():
                     try:
-                        os.unlink(temp_m4b)
+                        encode_marker.touch()
+                        print("Encoding progress saved.")
+                    except Exception as e:
+                        print(f"Warning: Could not save encoding progress marker: {e}")
+
+                # Clean up original MP3 files (old step) AFTER encoding succeeds (no step loses info early)
+                for mp3_file in tmp_dir.glob("*.mp3"):
+                    try:
+                        os.unlink(mp3_file)
+                        print(f"Cleaned up original MP3 file: {mp3_file.name}")
+                    except Exception as e:
+                        print(f"Warning: Could not remove MP3 file {mp3_file.name}: {e}")
+
+            # Step 3: Concatenate files to temp file
+            concat_marker = tmp_dir / "concat_completed.marker"
+            if concat_marker.exists() and (tmp_dir / temp_filename).exists():
+                print(f"Concatenation already completed. Skipping concatenation step.")
+            else:
+                print(f"Converting to single {ext[1:].upper()} (concatenating)...")
+                # Remove any partial temp file from a previous failed run before starting concatenation
+                temp_file_path = tmp_dir / temp_filename
+                if temp_file_path.exists():
+                    try:
+                        os.unlink(temp_file_path)
                     except Exception:
                         pass
 
-                concat_success = file_conversions.concat_m4b(tmp_dir, tmp_dir, 'temp.m4b')
+                if is_mka:
+                    concat_success = file_conversions.concat_mka(tmp_dir, tmp_dir, 'temp.mka')
+                else:
+                    concat_success = file_conversions.concat_m4b(tmp_dir, tmp_dir, 'temp.m4b')
+
                 if not concat_success:
-                    print("ERROR: Converted to single M4B failed.")
+                    print(f"ERROR: Converted to single {ext[1:].upper()} failed.")
                     continue # Do NOT clean up tmp_dir so we can retry concat without re-download/re-encode!
 
                 try:
@@ -395,14 +414,23 @@ def main():
                 except Exception as e:
                     print(f"Warning: Could not save concatenation progress marker: {e}")
 
-            # Clean up individual part AAC/M4B files (old step) AFTER concatenation succeeds
-            for part_file in list(tmp_dir.glob("*.m4b")) + list(tmp_dir.glob("*.m4a")):
-                if part_file.name != "temp.m4b" and part_file.is_file():
-                    try:
-                        os.unlink(part_file)
-                        print(f"Cleaned up individual part file: {part_file.name}")
-                    except Exception as e:
-                        print(f"Warning: Could not remove individual part file {part_file.name}: {e}")
+            # Clean up individual part files (old step) AFTER concatenation succeeds
+            if is_mka:
+                for part_file in tmp_dir.glob("*.mp3"):
+                    if part_file.name != "temp.mp3" and part_file.is_file():
+                        try:
+                            os.unlink(part_file)
+                            print(f"Cleaned up individual part file: {part_file.name}")
+                        except Exception as e:
+                            print(f"Warning: Could not remove individual part file {part_file.name}: {e}")
+            else:
+                for part_file in list(tmp_dir.glob("*.m4b")) + list(tmp_dir.glob("*.m4a")):
+                    if part_file.name != "temp.m4b" and part_file.is_file():
+                        try:
+                            os.unlink(part_file)
+                            print(f"Cleaned up individual part file: {part_file.name}")
+                        except Exception as e:
+                            print(f"Warning: Could not remove individual part file {part_file.name}: {e}")
 
             # Step 4: Generate metadata file
             metadata_marker = tmp_dir / "metadata_generated.marker"
@@ -421,7 +449,7 @@ def main():
             metadata_encoded_marker = tmp_dir / "metadata_encoded.marker"
             cover_path = os.path.abspath(os.path.join(tmp_dir, "cover.jpg"))
             sanitized_title = book_title.translate(filter_table).replace(" ", "")
-            output_file = os.path.abspath(os.path.join(download_path, sanitized_title + ".m4b"))
+            output_file = os.path.abspath(os.path.join(download_path, sanitized_title + ext))
 
             if metadata_encoded_marker.exists() and os.path.exists(output_file):
                 print("Adding metadata to audiobook already completed. Skipping.")
@@ -433,7 +461,7 @@ def main():
                     except Exception:
                         pass
 
-                encode_meta_success = file_conversions.encode_metadata(tmp_dir, "temp.m4b", output_file, "ffmetadata", cover_path)
+                encode_meta_success = file_conversions.encode_metadata(tmp_dir, temp_filename, output_file, "ffmetadata", cover_path)
                 if not encode_meta_success:
                     print("ERROR: Adding metadata to audiobook failed.")
                     continue # Do NOT clean up tmp_dir
