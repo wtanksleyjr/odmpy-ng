@@ -20,39 +20,14 @@
 Before running, you must configure the tool with a configuration file, see
 Configuration section below.
 
-### Option 1: Run with Docker
+### Option 1: Run with Docker Compose
 
-This (or docker compose) is the preferred usage method.
-
-Requirements:
-- Docker
-- Git
-
-```bash
-git clone https://github.com/kernalbin/odmpy-ng.git
-cd odmpy-ng
-docker build -t odmpy-ng .
-docker run -it --rm \
-  -v ./config:/config \
-  -v ./downloads:/downloads \
-  -v ./tmp-downloads:/tmp-downloads \
-  -v .:/app:ro \
-  -e HOST_UID=$(id -u) \
-  -e HOST_GID=$(id -g) \
-  odmpy-ng
-```
-
----
-
-### Option 2: Run with Docker Compose
-
-This can make development easier, since it builds quicker and only needs to be
-told the path to the books ouptut directory (and that can be provided by an
-environment variable, AUDIOBOOK_FOLDER).
+This only needs to be told the path to the books ouptut directory
+(and that can be provided by an environment variable, AUDIOBOOK_FOLDER).
 
 Use `./build-compose.py` to build the docker-compose file.
 
-See `build-compose.py run --help` for odmpy-ng options.
+See `./build-compose.py run --help` for odmpy-ng options.
 
 Requirements:
 - Docker Compose (note that the older docker-compose is not supported)
@@ -65,6 +40,35 @@ cd odmpy-ng
 cp config/config.example.json config/config.json
 # edit config/config.json
 ./build-compose.py -d ~/audiobooks -t ~/mytmp run
+```
+
+The above session will (if all is well) allow you to pick out which
+library, and then let you pick a book from it. A more powerful option
+is:
+
+```bash
+export AUDIOBOOK_FOLDER=~/audiobooks
+export AUDIOBOOK_TMP=~/mytmp
+./build-compose.py
+./build-compose.py run -L all
+```
+
+Save those environment variables for future use (the rest of this
+session will assume they're present); you want to store
+your books in the same place so this can manage your downloads. For
+the ultimate in automation, try the -a option:
+
+```bash
+./build-compose.py run -L all -a 5
+```
+
+The above session will scan all of your libraries and download the 5
+undownloaded books closest to expiring automatically. If you have more
+than 5 books you can run it again, or pass a larger number. If you don't
+know, run the following to be told without downloading anything:
+
+```bash
+./build-compose.py run -L all -a
 ```
 
 ---
