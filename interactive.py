@@ -325,6 +325,7 @@ def main():
 
             tmp_info_path = tmp_dir / 'info.json'
             if tmp_info_path.exists():
+                print("Converting thunder metadata to ABS format")
                 temp_info_path = pathlib.Path(shutil.copy(tmp_info_path, download_path))
                 convert_metadata.convert_odm_to_abs(temp_info_path, chs, abs_metadata_path, title=book_title, author=book_author)
                 if config.get("download_thunder_metadata", 0):
@@ -332,6 +333,7 @@ def main():
                 else:
                     os.unlink(temp_info_path)
             else:
+                print("No thunder metadata found")
                 convert_metadata.convert_odm_to_abs(None, chs, abs_metadata_path, title=book_title, author=book_author)
 
             print("Provided audiobookshelf metadata")

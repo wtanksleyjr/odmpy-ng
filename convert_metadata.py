@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
-"""
-Audiobook metadata conversion helpers.
-"""
+#!/bin/python3.11
 import os
 import json
 import sys
@@ -9,9 +6,6 @@ import string
 import itertools
 import pathlib
 import shutil
-import subprocess
-import tempfile
-import re
 from typing import List, Set
 from mutagen.mp3 import MP3
 import atomicwrites
@@ -20,109 +14,28 @@ import atomicwrites
 # Python's title() function, it's buggy in its original design and no longer
 # fixable. I need to get tag names from data files (and fix by hand).
 def normalize_tag(tag: str) -> str:
+    #return canonical_tags.get((t := string.capwords(tag.strip())), t)
     t = tag.strip()
     if t.isupper():
         t = string.capwords(t)
     return canonical_tags.get(t, t)
 
-def to_seconds(t_str: str) -> float:
-    if not isinstance(t_str, str):
-        try:
-            return float(t_str)
-        except (ValueError, TypeError):
-            t_str = str(t_str)
-            
-    t_str = t_str.strip()
-    if not t_str:
-        return 0.0
+def get_mp3_duration(filelike) -> int:
+    """Returns the duration of an MP3 file in seconds."""
+    mp3 = MP3(filelike)
+    length = int(mp3.info.length)
+    if mp3.info.sketchy: # type: ignore[attr-defined]
+        raise ValueError("Corrupted MP3 file")
+    return length
 
-    # Check if format is e.g. "16h 10m" or similar
-    m_hm = re.match(r'(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?', t_str, re.IGNORECASE)
-    if m_hm and (m_hm.group(1) or m_hm.group(2) or m_hm.group(3)):
-        h = int(m_hm.group(1)) if m_hm.group(1) else 0
-        m = int(m_hm.group(2)) if m_hm.group(2) else 0
-        s = int(m_hm.group(3)) if m_hm.group(3) else 0
-        return h * 3600.0 + m * 60.0 + s
-
-    # Standard format: "HH:MM:SS" or "MM:SS"
-    parts = t_str.split(':')
-    if len(parts) == 3:
-        try:
-            return int(parts[0]) * 3600.0 + int(parts[1]) * 60.0 + float(parts[2])
-        except ValueError:
-            pass
-    elif len(parts) == 2:
-        try:
-            return int(parts[0]) * 60.0 + float(parts[1])
-        except ValueError:
-            pass
-    elif len(parts) == 1:
-        try:
-            return float(parts[0])
-        except ValueError:
-            pass
-
-    return 0.0
-
-def to_hms(seconds: float) -> str:
-    seconds = float(seconds)
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = seconds % 60
-    # If s is an integer or very close to it, format as integer
-    if abs(s - round(s)) < 0.001:
-        return f"{h:02d}:{m:02d}:{round(s):02d}"
-    else:
-        return f"{h:02d}:{m:02d}:{s:06.3f}"
-
-def get_mp3_duration(file_or_path) -> float:
-    """Returns the duration of an MP3 file in seconds, trying mutagen first, then ffprobe."""
-    try:
-        if isinstance(file_or_path, (str, bytes, os.PathLike)):
-            mp3 = MP3(str(file_or_path))
-        else:
-            mp3 = MP3(file_or_path)
-        length = float(mp3.info.length)
-        if mp3.info.sketchy:  # type: ignore[attr-defined]
-            raise ValueError("Corrupted MP3 file reported by mutagen")
-        return length
-    except Exception as e_mutagen:
-        # Fallback to ffprobe
-        if isinstance(file_or_path, (str, bytes, os.PathLike)):
-            path = str(file_or_path)
-            temp_file = None
-        else:
-            # File-like object (e.g. BytesIO)
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-            temp_file.write(file_or_path.read())
-            temp_file.close()
-            path = temp_file.name
-
-        try:
-            cmd = [
-                "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", path
-            ]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-            return float(result.stdout.strip())
-        except Exception as e_ffprobe:
-            print(f"Warning: error getting MP3 duration via ffprobe: {e_ffprobe} (mutagen error was: {e_mutagen})")
-            return 0.0
-        finally:
-            if temp_file is not None:
-                try:
-                    os.unlink(path)
-                except Exception:
-                    pass
-
-def get_total_duration(directory) -> float:
+def get_total_duration(directory) -> int:
     """Calculates the total duration of all MP3 files in a directory."""
-    total_duration = 0.0
+    total_duration = 0
     for filename in os.listdir(directory):
         if filename.endswith(".mp3"):
             filepath = os.path.join(directory, filename)
             total_duration += get_mp3_duration(filepath)
-    return total_duration
+    return int(total_duration)
 
 def abs_from_pylibby(container, mark_autoloaded=["Misordered"]):
     # pylibby uses two different formats, not sure why.
@@ -156,13 +69,13 @@ def abs_from_pylibby(container, mark_autoloaded=["Misordered"]):
     description_key = 'fullDescription' if 'fullDescription' in input_data else 'description'
 
     output_data = {
-        "tags": sorted(tags) + mark_autoloaded,
+        "tags": mark_autoloaded + sorted(tags),
         "series": orders,
         "title": input_data["title"],
         "authors": [creator["name"] for creator in creators if creator["role"] == 'Author'],
         "narrators": [creator["name"] for creator in creators if creator["role"] == 'Narrator'],
         "publisher": input_data["publisherAccount"]["name"],
-        "description": input_data[description_key],
+        "description":input_data[description_key],
         "genres": []
     }
     if subtitle:
@@ -454,19 +367,30 @@ communities = {
     'Fiction': frozenset({'Humor (Fiction)', 'Military Fiction', 'Difficult Situations', 'Gothic', 'Mystery', 'World Literature', "Women's Adventure", "Women's Fiction", 'Teen & Young Adult', 'Steampunk', 'Literature & Fiction', 'Chapter Books & Readers', 'First Contact', 'Epic', 'Contemporary', 'Police Procedurals', 'Anthologies', 'Suspense', 'Sword & Sorcery', 'Historical Fiction', 'Romantic Suspense', 'Paranormal & Urban', 'Horror', 'Gaslamp', 'Paranormal & Supernatural', 'Dramatizations', 'Supernatural', 'Private Investigators', 'Adventure', 'Science Fiction & Fantasy', 'Literary Fiction', 'Dystopian', 'Halloween', 'Superhero', 'Space Exploration', 'Fantasy', 'Westerns', 'Mash-Ups', 'Thriller & Suspense', 'Genetic Engineering', 'Hard-Boiled', 'Anthologies & Short Stories', 'Christian Fiction', 'Mysteries', 'Mystery & Suspense', 'Time Travel', 'Fairy Tales', 'Alternate History', 'Cyberpunk', 'Genre Fiction', 'Paranormal', 'Dragons & Mythical Creatures', 'Sagas', 'Science Fiction', 'Spies & Politics', 'Short Stories', 'Scary Stories', 'Ghosts', 'International Mystery & Crime', 'Biographical Fiction', 'Holidays & Celebrations', 'Crime Thrillers', 'Espionage', 'Aliens', 'Hard Science Fiction', 'Mystery, Thriller & Suspense', 'Traditional Detectives', 'American Civil War', 'Romance', 'Psychological', 'Growing Up & Facts of Life', 'Fantasy & Magic', 'Dark Humor', 'Space Opera', 'War & Military', 'Magical Realism', 'Crime Fiction', 'Technothrillers', 'Metaphysical & Visionary', 'Noir', 'Domestic Thrillers', 'Post-Apocalyptic', 'Action & Adventure'}),
 }
 
+def to_seconds(hms: str) -> int:
+    parts = list(map(int, hms.split(":")))
+    return sum(x * 60**i for i, x in enumerate(reversed(parts)))
+
+def to_hms(seconds: int) -> str:
+    seconds = int(seconds)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    seconds = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: python convert_metadata.py <ipath>")
         sys.exit(1)
 
     filename = pathlib.Path(sys.argv[1])
-    with open(filename, 'r', encoding='utf-8') as f:
+    with open(filename, 'r') as f:
         odm_chapters = json.load(f)
     # Get the folder containing the book
     dir = filename.parent
     abs_meta = dir / 'metadata.json'
 
-    with open(abs_meta, 'r', encoding='utf-8') as f:
+    with open(abs_meta, 'r') as f:
         abs_data = json.load(f)
         abs_data['chapters'] = convert_odm_to_abs_chapters(odm_chapters)
 
@@ -475,92 +399,69 @@ def main():
         shutil.move(abs_meta, abs_meta.with_suffix('.bak'))
     # Replace!
     with atomicwrites.atomic_write(abs_meta) as f:
-        json.dump(abs_data, f, indent=2, ensure_ascii=False)
+        json.dump(abs_data, f, indent=2)
     # Move the input file to a backup.
     if filename.exists():
         shutil.move(filename, filename.with_suffix('.bak'))
 
-def convert_odm_to_abs(input_path, chapters: list = None, output_path=None, title=None, author=None):
-    """
-    Supports:
-    1. convert_odm_to_abs(metadata_path, chapters, output_path, title, author) -> merges into existing metadata.json
-    2. convert_odm_to_abs(filename_path, chapters=None) -> converts input Overdrive JSON to ABS format using abs_from_pylibby
-    """
-    if chapters is None and (isinstance(input_path, pathlib.Path) or (isinstance(input_path, str) and input_path.endswith('.json') and not output_path)):
-        # Original style: Libby/Overdrive JSON converter
-        filename = input_path
-        dir, _ = os.path.split(filename)
-        ofilename = os.path.join(dir, 'metadata.json')
+def create_metadata_from_scratch(output_path: pathlib.Path, chapters: list[dict]|None = None, title: str|None = None, author: str|None = None):
+    output_data = {
+        "title": title or "",
+        "authors": [author] if author else [],
+        "narrators": [],
+        "series": [],
+        "genres": [],
+        "tags": ["Autoloaded", "OdmpyNG"],
+        "chapters": chapters or []
+    }
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
 
-        with open(filename, 'r', encoding='utf-8') as file:
-            input_data = json.load(file)
+def convert_odm_with_info(filename: pathlib.Path, chapters: list[dict]|None = None, output_path: pathlib.Path|None = None, title=None, author=None):
+    filename = pathlib.Path(filename)
+    dir = filename.parent
+    ofilename = output_path if output_path is not None else dir / 'metadata.json'
 
-        # Is there an Overdrive chapters list?
-        chapter_file = os.path.join(dir, 'chapters.json')
-        if os.path.exists(chapter_file):
+    with open(filename, 'r', encoding='utf-8') as file:
+        input_data = json.load(file)
+
+    # Is there an Overdrive chapters list?
+    if chapters is None:
+        chapter_file = dir / 'chapters.json'
+        if chapter_file.exists():
             # Convert to a audiobookfile chapter list.
             with open(chapter_file, encoding='utf-8') as f:
                 chs = json.load(f)
-                chapters_list = convert_odm_to_abs_chapters(chs)
-        else:
-            chapters_list = []
+                chapters = convert_odm_to_abs_chapters(chs)
 
-        output_data = abs_from_pylibby(input_data, ["Autoloaded", "OdmpyNG"])
-        if chapters_list:
-            output_data['chapters'] = chapters_list
+    output_data = abs_from_pylibby(input_data, ["Autoloaded", "OdmpyNG"])
+    if chapters:
+        output_data['chapters'] = chapters
 
-        with open(ofilename, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, indent=2, ensure_ascii=False)
-            
+    # Overwrite/fill title and authors if passed and missing/empty in output_data
+    if not output_data.get("title") and title:
+        output_data["title"] = title
+    if not output_data.get("authors") and author:
+        output_data["authors"] = [author]
+
+    with open(ofilename, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+
+def convert_odm_to_abs(filename: pathlib.Path|None, chapters: list[dict]|None = None, output_path: pathlib.Path|None = None, title=None, author=None):
+    if filename is None:
+        if output_path is None:
+            raise ValueError("output_path is required when filename is None")
+        create_metadata_from_scratch(output_path, chapters, title, author)
     else:
-        # Newer style: merge chapters and title/author into metadata
-        data = {}
-        if input_path and os.path.exists(input_path):
-            try:
-                with open(input_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except Exception:
-                pass
+        convert_odm_with_info(filename, chapters, output_path, title, author)
 
-        if "title" not in data and title:
-            data["title"] = title
-        if "author" not in data and author:
-            data["author"] = author
-
-        data["chapters"] = chapters if chapters is not None else []
-
-        target_path = output_path if output_path else input_path
-        if target_path:
-            with open(target_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-
-def convert_odm_to_abs_chapters(book_chapter_markers: list) -> list:
-    def parse_time_val(val) -> float:
-        if isinstance(val, (int, float)):
-            return float(val)
-        if not isinstance(val, str):
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                val = str(val)
-        return to_seconds(val)
-
+def convert_odm_to_abs_chapters(chs: list[tuple[str, str, str]]):
     chapters = []
-    for i, marker in enumerate(book_chapter_markers):
-        if len(marker) == 3:
-            title, start, end = marker
-        else:
-            title, start, end = marker[0], marker[1], marker[2]
-            
+    for i, ch in enumerate(chs):
+        title, start, end = ch
         if not title:
-            title = ""
-            
-        chapters.append({
-            "id": i,
-            "title": title,
-            "start": parse_time_val(start),
-            "end": parse_time_val(end)
-        })
+            title = ''
+        chapters.append({'id': i, 'title': title, 'start': to_seconds(start), 'end': to_seconds(end)})
     return chapters
 
 if __name__ == "__main__":
