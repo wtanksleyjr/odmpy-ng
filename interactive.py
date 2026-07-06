@@ -14,34 +14,100 @@ from scraper import Scraper, Cookies
 import file_conversions
 import convert_metadata
 
+def get_download_path(book_selection, downloads_dir, name_dir_arg) -> str:
+    book_title = book_selection["title"]
+    book_author = book_selection["author"]
+    filter_table = str.maketrans(dict.fromkeys(string.punctuation))
+    if name_dir_arg:
+        try:
+            name_dir_formatted = name_dir_arg.format(
+                id=book_selection["id"],
+                title=book_title.translate(filter_table),
+                author=book_author.translate(filter_table)
+            )
+        except Exception as e:
+            # Handle formatting errors
+            name_dir_formatted = name_dir_arg # fallback
+        download_path = os.path.abspath(os.path.join(downloads_dir, name_dir_formatted))
+    else:
+        download_path = os.path.abspath(os.path.join(
+            downloads_dir, 
+            book_author.translate(filter_table), 
+            book_title.translate(filter_table)
+        ))
+    return download_path
+
+def is_book_already_downloaded(download_path: str) -> bool:
+    if not os.path.isdir(download_path):
+        return False
+    # Check if there is any file ending with supported audio extensions
+    extensions = ('.mp3', '.m4b', '.mka', '.m4a')
+    try:
+        for file in os.listdir(download_path):
+            if file.lower().endswith(extensions):
+                # Make sure it's a file
+                if os.path.isfile(os.path.join(download_path, file)):
+                    return True
+    except Exception:
+        pass
+    return False
+
+def print_detailed_book_list(books_list: list, title: str, force_active: bool, list_prefix: str = "  * "):
+    print("\n" + "="*80)
+    print(title)
+    print("-"*80)
+    for book in books_list:
+        due_info = f" ({book['due_text']})" if book.get('due_text') else ""
+        lib_info = f" [{book['library_name']}]" if book.get('library_name') else ""
+        print(f"{list_prefix}{book['title']} - {book['author']}{due_info}{lib_info} ({book['id']})")
+        
+        path = book["download_path"]
+        if os.path.exists(path):
+            if book["already_downloaded"]:
+                if force_active:
+                    status = "Exists (already downloaded - will be REPLACED)"
+                else:
+                    status = "Exists (already downloaded)"
+            else:
+                if force_active:
+                    status = "Directory exists (will be REPLACED)"
+                else:
+                    status = "Directory exists"
+        else:
+            status = "Will be created"
+            
+        print(f"    Path: {path} [{status}]")
+    print("="*80 + "\n")
+
 # Convert user entered string into a list of valid book indexes
 # Allows for comma separated items and dash separated ranges
-def parse_book_selection_input(userinput: str, books: list) -> list[int]:
+def parse_book_selection_input(userinput: str, books: list, force_active: bool = False) -> list[int]:
     """
     Parses a comma-separated and range-based string into a list of valid book indexes.
 
     Args:
         userinput (str): String input from user selecting books.
         books (list): Complete list of books to validate against
+        force_active (bool): If True, allows selecting already downloaded books.
 
     Returns:
         set: Parsed ordered list of selected books
     """
-    userinput.strip()
+    userinput = userinput.strip()
     if not userinput:
         return []
 
     parts_set = set()
     parts = userinput.split(',')
 
-    valid_indexes = {book["index"] for book in books}
+    valid_indexes = {book["index"] for book in books if force_active or not book.get("already_downloaded")}
 
     for part in parts:
         part = part.strip()
         if '-' in part:
-            parts = part.split('-')
-            if all(part.isdigit() for part in parts):
-                start, end = map(int, part.split('-'))
+            subparts = part.split('-')
+            if all(p.strip().isdigit() for p in subparts) and len(subparts) == 2:
+                start, end = map(int, subparts)
                 parts_set.update(range(start, end+1))
             else:
                 raise ValueError(f"Invalid range input: {part}")
@@ -50,7 +116,7 @@ def parse_book_selection_input(userinput: str, books: list) -> list[int]:
                 parts_set.add(int(part))
             else:
                 raise ValueError(f"Invalid integer input: {part}")
-
+            
     return sorted(parts_set.intersection(valid_indexes))
 
 def get_book_by_index(index: int, books: list):
@@ -76,6 +142,8 @@ def main():
     parser.add_argument("--retry", "-r", action="store_true", help="Allow retry of stopped downloads (if left in tmp dir)")
     parser.add_argument("--name-dir", "-n", type=str, help="Subdirectory template relative to /downloads. Supports {id}, {title}, and {author} wildcards for multiple books")
     parser.add_argument("--get-metadata", action="store_true", help="Get metadata only for all indicated books, do not download.")
+    parser.add_argument("--force", "-f", action="store_true", help="Allow selection/re-download of already downloaded books and replace their contents.")
+    parser.add_argument("--autofetch", "-a", type=int, nargs="?", const=-1, help="Automatically download at most the N most about-to-expire books (if N is specified). If N is not specified, prints the list and explains the number of books that would be downloaded.")
     # These two are mutually exclusive
     exclusive_group = parser.add_mutually_exclusive_group(required=False)
     exclusive_group.add_argument("--library", "-L", type=str, help="Index of library within config to download from, or 'all'")
@@ -93,10 +161,10 @@ def main():
                 config = json.load(f)
             except json.JSONDecodeError:
                 print(f"Error: Config file '{config_file}' is not valid JSON")
-                sys.exit(1)
+                sys.exit(1)    
     else:
         print(f"Error: Config file '{config_file}' not found")
-        sys.exit(1)
+        sys.exit(1)    
 
     config_dir = os.path.dirname(config_file)
     if not os.path.exists(config_dir):
@@ -209,7 +277,7 @@ def main():
             }
             if "sublibrary" in lib:
                 scraper_config["sublibrary"] = lib["sublibrary"]
-
+            
             try:
                 temp_scraper = Scraper(scraper_config, cookies)
                 new_cookies = temp_scraper.ensure_login()
@@ -217,17 +285,17 @@ def main():
                     print(f"Sign in failed for library: {lib['name']}")
                     temp_scraper.close()
                     continue
-
+                
                 new_cookies.write_to_file(cookie_file)
                 with open(cookie_file) as f:
                     cookies = Cookies.read_loaded(json.load(f))
-
+                
                 lib_books = temp_scraper.get_loans()
                 for b in lib_books:
                     b["library_index"] = idx
                     b["library_name"] = lib["name"]
                     all_books.append(b)
-
+                
                 temp_scraper.close()
             except Exception as e:
                 print(f"Error scanning library {lib['name']}: {e}")
@@ -236,7 +304,7 @@ def main():
                 except Exception:
                     pass
                 continue
-
+        
         all_books.sort(key=lambda b: b.get("due_days", 999.0))
         for idx, b in enumerate(all_books):
             b["index"] = idx
@@ -279,29 +347,104 @@ def main():
         for idx, b in enumerate(books):
             b["index"] = idx
 
+    # Check for already downloaded books
+    for book in books:
+        book["download_path"] = get_download_path(book, downloads_dir, args.name_dir)
+        book["already_downloaded"] = is_book_already_downloaded(book["download_path"])
+
     # Print loans for selection by user
     title_selections = []
 
     find_id = str(args.id) if args.id else ''
     for book in books:
-        this_one = False
         if book["id"] == find_id:
+            if book["already_downloaded"] and not args.force:
+                print(f"ERROR: Book with ID {find_id} ('{book['title']}') is already downloaded. Use --force/-f to re-download.")
+                sys.exit(1)
             title_selections.append(book["index"])
-            this_one = True
 
-        visible_marker = "->" if this_one else "  "
-        due_info = f" ({book['due_text']})" if book.get('due_text') else ""
-        lib_info = f" [{book['library_name']}]" if book.get('library_name') else ""
-        print(f"{visible_marker} {book['index']}: {book['title']} - {book['author']}{due_info}{lib_info} ({book['id']})")
+    already_downloaded_books = [b for b in books if b["already_downloaded"] and not args.force]
+
+    autofetch_books = []
+    if args.autofetch is not None:
+        candidate_books = [b for b in books if not b["already_downloaded"] or args.force]
+        seen_ids = set()
+        dedup_candidates = []
+        for book in candidate_books:
+            book_id = book["id"]
+            if book_id not in seen_ids:
+                seen_ids.add(book_id)
+                dedup_candidates.append(book)
+
+        if args.autofetch <= 0:
+            autofetch_books = dedup_candidates
+        else:
+            autofetch_books = dedup_candidates[:args.autofetch]
+            title_selections = [book["index"] for book in autofetch_books]
+
+    selectable_books = [b for b in books if (not b["already_downloaded"] or args.force) and b not in autofetch_books]
+
+    # 1. Print Already Downloaded List
+    if already_downloaded_books:
+        print_detailed_book_list(already_downloaded_books, "ALREADY DOWNLOADED LOANS (NON-SELECTABLE - Use --force/-f to re-download):", args.force)
+    else:
+        print("No already downloaded loans.")
+
+    # 2. Print Selectable List
+    if selectable_books:
+        print("\nSelectable loans:")
+        for book in selectable_books:
+            this_one = (book["index"] in title_selections)
+            visible_marker = "->" if this_one else "  "
+            forced_text = " (FORCED)" if book["already_downloaded"] else ""
+            due_info = f" ({book['due_text']})" if book.get('due_text') else ""
+            lib_info = f" [{book['library_name']}]" if book.get('library_name') else ""
+            print(f"{visible_marker} {book['index']}{forced_text}: {book['title']} - {book['author']}{due_info}{lib_info} ({book['id']})")
+    else:
+        print("\nNo selectable loans available.")
+
+    # 3. Print Autofetch List
+    if args.autofetch is not None:
+        if autofetch_books:
+            if args.autofetch <= 0:
+                print_detailed_book_list(autofetch_books, "AUTOFETCH PREVIEW (These books WOULD be downloaded):", args.force)
+            else:
+                print_detailed_book_list(autofetch_books, "AUTOFETCH SELECTION (These books WILL be downloaded):", args.force)
+        else:
+            print("No autofetch loans available.")
+
+    # If in autofetch preview mode, exit now
+    if args.autofetch is not None and args.autofetch <= 0:
+        if autofetch_books:
+            print(f"\nTo download them, please run again specifying the number of books, e.g.: -a {len(autofetch_books)}\n")
+        sys.exit(0)
 
     if not title_selections and books:
         assert not find_id, f"Libby shows checkout of {find_id} but was not found in books"
+        if not selectable_books:
+            print("All loans are already downloaded. Use --force/-f if you wish to re-download them.")
+            sys.exit(0)
         selections_input = input("Select a title to download (e.g., 0,1,2-3): ")
-        title_selections = parse_book_selection_input(selections_input, books)
+        title_selections = parse_book_selection_input(selections_input, books, args.force)
 
     if not title_selections:
         print("No books selected")
         sys.exit(1)
+
+    # Check for duplicate destinations among selected books
+    if len(title_selections) > 1:
+        destinations = {}
+        for title_index in title_selections:
+            book_sel = get_book_by_index(title_index, books)
+            if book_sel:
+                dest_path = book_sel["download_path"]
+                if dest_path in destinations:
+                    other_book = destinations[dest_path]
+                    print(f"\nERROR: Multiple selected books would be downloaded to the same destination path: '{dest_path}'")
+                    print(f"  - Book 1: ID {other_book['id']} ('{other_book['title']}')")
+                    print(f"  - Book 2: ID {book_sel['id']} ('{book_sel['title']}')")
+                    sys.exit(1)
+                destinations[dest_path] = book_sel
 
     if args.name_dir and len(title_selections) > 1:
         if not any(wildcard in args.name_dir for wildcard in ["{id}", "{title}", "{author}"]):
@@ -400,7 +543,7 @@ def main():
         if os.path.exists(tmp_dir) and not args.retry and not has_markers:
             print(f"Removing old temporary directory (no progress markers found): {tmp_dir}")
             shutil.rmtree(tmp_dir)
-
+            
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Accessing {book_selection['title']}, ID: {book_selection['id']}")
@@ -458,17 +601,24 @@ def main():
         else:
             # Filter to remove punctuation from book title/author for file path
             download_path = os.path.abspath(os.path.join(
-                downloads_dir,
-                book_author.translate(filter_table),
+                downloads_dir, 
+                book_author.translate(filter_table), 
                 book_title.translate(filter_table)
             ))
+
+        if args.force and os.path.exists(download_path):
+            print(f"Force mode: Removing existing files in '{download_path}' to prepare for replacement...")
+            try:
+                shutil.rmtree(download_path)
+            except Exception as e:
+                print(f"Warning: Could not remove existing directory '{download_path}': {e}")
 
         os.makedirs(download_path, exist_ok=True)
 
         if config.get("convert_audiobookshelf_metadata", 0):
             chs = convert_metadata.convert_odm_to_abs_chapters(book_chapter_markers)
             abs_metadata_path = pathlib.Path(download_path) / 'metadata.json'
-
+            
             tmp_info_path = tmp_dir / 'info.json'
             if tmp_info_path.exists():
                 temp_info_path = pathlib.Path(shutil.copy(tmp_info_path, download_path))
@@ -479,7 +629,7 @@ def main():
                     os.unlink(temp_info_path)
             else:
                 convert_metadata.convert_odm_to_abs(None, chs, abs_metadata_path, title=book_title, author=book_author)
-
+                
             print("Provided audiobookshelf metadata")
         elif config.get("download_thunder_metadata", 0):
             tmp_info_path = tmp_dir / 'info.json'
@@ -617,6 +767,8 @@ def main():
                     print("Finished file created successfully.")
                 except Exception as e:
                     print(f"Warning: Could not save final metadata progress marker: {e}")
+
+        print(f"\nOverdrive Load Complete: {book_selection['id']}: {book_selection['title']}")
 
         # Clean up temporary files only when the entire pipeline for this book is completed successfully
         try:
