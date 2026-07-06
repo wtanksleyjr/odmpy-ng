@@ -83,9 +83,9 @@ def parse_due_text_to_days(text: str) -> float:
     """
     if not text:
         return 999.0
-    
+
     text_lower = text.lower()
-    
+
     # Try to find numbers and units
     import re
     # Match numbers (including decimals or integers) followed by units
@@ -103,12 +103,12 @@ def parse_due_text_to_days(text: str) -> float:
             return val * 7.0
         else: # day/days
             return val
-            
+
     # Fallback if there's a digit but no matched unit
     match_digit = re.search(r'(\d+)', text_lower)
     if match_digit:
         return float(match_digit.group(1))
-        
+
     return 999.0
 
 class Scraper:
@@ -576,7 +576,7 @@ class Scraper:
         cover_image_url = None
         book_id = bookinfo["id"]
         info_json_path = download_path / 'info.json'
-        
+
         if info_json_path.exists():
             print(f"Reading Thunder API metadata from {info_json_path} to locate high-res cover image...")
             try:
@@ -588,21 +588,21 @@ class Scraper:
                     if key in covers and covers[key].get("href"):
                         best_cover_key = key
                         break
-                
+
                 if best_cover_key:
                     orig_href = covers[best_cover_key]["href"]
                     print(f"Found best cover from Thunder metadata ({best_cover_key}): {orig_href}")
-                    
+
                     from urllib.parse import urlparse, quote_plus
                     parsed = urlparse(orig_href)
                     path = parsed.path
-                    
+
                     # Upgrade ImageType-150 or ImageType-400 to ImageType-100 (highest quality original) if possible
                     if 'ImageType-150' in path:
                         path = path.replace('ImageType-150', 'ImageType-100').replace('IMG150.JPG', 'IMG100.JPG').replace('img150.jpg', 'img100.jpg')
                     elif 'ImageType-400' in path:
                         path = path.replace('ImageType-400', 'ImageType-100').replace('IMG400.JPG', 'IMG100.JPG').replace('img400.jpg', 'img100.jpg')
-                        
+
                     # Construct high-resolution Libby CDN resize URL
                     cover_image_url = f"https://ic.od-cdn.com/resize?type=auto&width=1400&quality=95&force=true&height=1400&url={quote_plus(path)}"
                     print(f"Constructed Libby CDN high-res cover URL: {cover_image_url}")
@@ -627,7 +627,7 @@ class Scraper:
                 try:
                     parsed = urlparse(captured_url)
                     path = parsed.path
-                    
+
                     if 'ic.od-cdn.com' in parsed.netloc and 'resize' in parsed.path:
                         query = parse_qs(parsed.query)
                         query['width'] = ['1400']
@@ -651,9 +651,9 @@ class Scraper:
                 except Exception as e:
                     print(f"Warning: Failed to upgrade captured cover URL: {e}")
                     cover_image_url = captured_url
-        
+
         cover_path = os.path.abspath(download_path / "cover.jpg")
-        
+
         if cover_image_url:
             print(f"Downloading cover image: {cover_image_url}")
             overdrive_download.download_cover(self.context, cover_image_url, cover_path, config.get("abort_on_warning", False))

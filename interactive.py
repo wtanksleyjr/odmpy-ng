@@ -31,8 +31,8 @@ def get_download_path(book_selection, downloads_dir, name_dir_arg) -> str:
         download_path = os.path.abspath(os.path.join(downloads_dir, name_dir_formatted))
     else:
         download_path = os.path.abspath(os.path.join(
-            downloads_dir, 
-            book_author.translate(filter_table), 
+            downloads_dir,
+            book_author.translate(filter_table),
             book_title.translate(filter_table)
         ))
     return download_path
@@ -60,7 +60,7 @@ def print_detailed_book_list(books_list: list, title: str, force_active: bool, l
         due_info = f" ({book['due_text']})" if book.get('due_text') else ""
         lib_info = f" [{book['library_name']}]" if book.get('library_name') else ""
         print(f"{list_prefix}{book['title']} - {book['author']}{due_info}{lib_info} ({book['id']})")
-        
+
         path = book["download_path"]
         if os.path.exists(path):
             if book["already_downloaded"]:
@@ -75,7 +75,7 @@ def print_detailed_book_list(books_list: list, title: str, force_active: bool, l
                     status = "Directory exists"
         else:
             status = "Will be created"
-            
+
         print(f"    Path: {path} [{status}]")
     print("="*80 + "\n")
 
@@ -116,7 +116,7 @@ def parse_book_selection_input(userinput: str, books: list, force_active: bool =
                 parts_set.add(int(part))
             else:
                 raise ValueError(f"Invalid integer input: {part}")
-            
+
     return sorted(parts_set.intersection(valid_indexes))
 
 def get_book_by_index(index: int, books: list):
@@ -140,14 +140,10 @@ def main():
     parser.add_argument("config_file", type=str, help="Path to config file")
     parser.add_argument("--id", "-i", type=int, help="Libby ID for a single book to download")
     parser.add_argument("--retry", "-r", action="store_true", help="Allow retry of stopped downloads (if left in tmp dir)")
-    parser.add_argument("--name-dir", "-n", type=str, help="Subdirectory template relative to /downloads. Supports {id}, {title}, and {author} wildcards for multiple books")
     parser.add_argument("--get-metadata", action="store_true", help="Get metadata only for all indicated books, do not download.")
     parser.add_argument("--force", "-f", action="store_true", help="Allow selection/re-download of already downloaded books and replace their contents.")
     parser.add_argument("--autofetch", "-a", type=int, nargs="?", const=-1, help="Automatically download at most the N most about-to-expire books (if N is specified). If N is not specified, prints the list and explains the number of books that would be downloaded.")
-    # These two are mutually exclusive
-    exclusive_group = parser.add_mutually_exclusive_group(required=False)
-    exclusive_group.add_argument("--library", "-L", type=str, help="Index of library within config to download from, or 'all'")
-    exclusive_group.add_argument("--site-id", "-s", type=int, help="Site-Id assigned in config to library to download from")
+    parser.add_argument("--library", "-L", type=str, help="Index of library within config to download from, or 'all'")
     args = parser.parse_args()
 
     if not os.path.exists(args.config_file):
@@ -161,10 +157,13 @@ def main():
                 config = json.load(f)
             except json.JSONDecodeError:
                 print(f"Error: Config file '{config_file}' is not valid JSON")
-                sys.exit(1)    
+                sys.exit(1)
     else:
         print(f"Error: Config file '{config_file}' not found")
-        sys.exit(1)    
+        sys.exit(1)
+
+    # Extract book_dir_template from the config file if specified, defaulting to "{author}/{title}"
+    book_dir_template = config.get("book_dir_template") or config.get("name_dir") or config.get("name-dir") or "{author}/{title}"
 
     config_dir = os.path.dirname(config_file)
     if not os.path.exists(config_dir):
@@ -200,12 +199,6 @@ def main():
         print("No libraries found, did you create a valid config file?")
         sys.exit(1)
 
-    # Enforce unique site-ids in libraries (except None is fine)
-    site_ids = [s for library in libraries if (s := library.get("site-id")) is not None]
-    if len(site_ids) != len(set(site_ids)):
-        print(f"Error: site-ids must be unique within libraries, please edit {config_file}")
-        sys.exit(1)
-
     library_index = None
     print("\nAvailable libraries:")
     for i, library in enumerate(libraries):
@@ -216,15 +209,11 @@ def main():
             elif str(i) == args.library:
                 visible_marker = " -> "
                 library_index = i
-        elif args.site_id is not None:
-            if library.get("site-id") == args.site_id:
-                visible_marker = " -> "
-                library_index = i
         else:
             visible_marker = f"{i:>3}:"
         print(f"{visible_marker} {library['name']} - {library['url']}")
 
-    if args.library is None and args.site_id is None:
+    if args.library is None:
         print("  all: All Libraries (Combined List)")
 
     if args.library is not None and args.library.lower() == 'all':
@@ -233,11 +222,8 @@ def main():
     if library_index is None and args.library is not None and args.library.lower() != 'all':
         print(f"Error: Library {args.library} not found in config")
         sys.exit(1)
-    if library_index is None and args.site_id is not None:
-        print(f"Error: Library matching site-id {args.site_id} not found in config")
-        sys.exit(1)
 
-    if library_index is None and args.library is None and args.site_id is None:
+    if library_index is None and args.library is None:
         if len(libraries) == 1:
             # Only one library, automatically select it
             library_index = 0
@@ -277,7 +263,7 @@ def main():
             }
             if "sublibrary" in lib:
                 scraper_config["sublibrary"] = lib["sublibrary"]
-            
+
             try:
                 temp_scraper = Scraper(scraper_config, cookies)
                 new_cookies = temp_scraper.ensure_login()
@@ -285,17 +271,17 @@ def main():
                     print(f"Sign in failed for library: {lib['name']}")
                     temp_scraper.close()
                     continue
-                
+
                 new_cookies.write_to_file(cookie_file)
                 with open(cookie_file) as f:
                     cookies = Cookies.read_loaded(json.load(f))
-                
+
                 lib_books = temp_scraper.get_loans()
                 for b in lib_books:
                     b["library_index"] = idx
                     b["library_name"] = lib["name"]
                     all_books.append(b)
-                
+
                 temp_scraper.close()
             except Exception as e:
                 print(f"Error scanning library {lib['name']}: {e}")
@@ -304,7 +290,7 @@ def main():
                 except Exception:
                     pass
                 continue
-        
+
         all_books.sort(key=lambda b: b.get("due_days", 999.0))
         for idx, b in enumerate(all_books):
             b["index"] = idx
@@ -349,7 +335,7 @@ def main():
 
     # Check for already downloaded books
     for book in books:
-        book["download_path"] = get_download_path(book, downloads_dir, args.name_dir)
+        book["download_path"] = get_download_path(book, downloads_dir, book_dir_template)
         book["already_downloaded"] = is_book_already_downloaded(book["download_path"])
 
     # Print loans for selection by user
@@ -446,9 +432,9 @@ def main():
                     sys.exit(1)
                 destinations[dest_path] = book_sel
 
-    if args.name_dir and len(title_selections) > 1:
-        if not any(wildcard in args.name_dir for wildcard in ["{id}", "{title}", "{author}"]):
-            print("ERROR: Cannot use --name-dir with multiple books unless a wildcard like '{id}', '{title}', or '{author}' is included in the path template")
+    if book_dir_template and len(title_selections) > 1:
+        if not any(wildcard in book_dir_template for wildcard in ["{id}", "{title}", "{author}"]):
+            print("ERROR: Cannot use book_dir_template with multiple books unless a wildcard like '{id}', '{title}', or '{author}' is included in the path template")
             sys.exit(1)
 
     active_scraper = None
@@ -543,7 +529,7 @@ def main():
         if os.path.exists(tmp_dir) and not args.retry and not has_markers:
             print(f"Removing old temporary directory (no progress markers found): {tmp_dir}")
             shutil.rmtree(tmp_dir)
-            
+
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Accessing {book_selection['title']}, ID: {book_selection['id']}")
@@ -587,22 +573,22 @@ def main():
 
         filter_table = str.maketrans(dict.fromkeys(string.punctuation))
 
-        if args.name_dir:
+        if book_dir_template:
             try:
-                name_dir_formatted = args.name_dir.format(
+                name_dir_formatted = book_dir_template.format(
                     id=book_selection["id"],
                     title=book_title.translate(filter_table),
                     author=book_author.translate(filter_table)
                 )
             except Exception as e:
-                print(f"ERROR: Failed to format --name-dir string '{args.name_dir}': {e}")
+                print(f"ERROR: Failed to format book_dir_template string '{book_dir_template}': {e}")
                 sys.exit(1)
             download_path = os.path.abspath(os.path.join(downloads_dir, name_dir_formatted))
         else:
             # Filter to remove punctuation from book title/author for file path
             download_path = os.path.abspath(os.path.join(
-                downloads_dir, 
-                book_author.translate(filter_table), 
+                downloads_dir,
+                book_author.translate(filter_table),
                 book_title.translate(filter_table)
             ))
 
@@ -618,7 +604,7 @@ def main():
         if config.get("convert_audiobookshelf_metadata", 0):
             chs = convert_metadata.convert_odm_to_abs_chapters(book_chapter_markers)
             abs_metadata_path = pathlib.Path(download_path) / 'metadata.json'
-            
+
             tmp_info_path = tmp_dir / 'info.json'
             if tmp_info_path.exists():
                 temp_info_path = pathlib.Path(shutil.copy(tmp_info_path, download_path))
@@ -629,7 +615,7 @@ def main():
                     os.unlink(temp_info_path)
             else:
                 convert_metadata.convert_odm_to_abs(None, chs, abs_metadata_path, title=book_title, author=book_author)
-                
+
             print("Provided audiobookshelf metadata")
         elif config.get("download_thunder_metadata", 0):
             tmp_info_path = tmp_dir / 'info.json'

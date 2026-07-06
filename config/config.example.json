@@ -5,7 +5,6 @@
             "url": "https://yourlibrary-sublibrary.overdrive.com",
             "card_number": "YOUR_CARD_NUMBER",
             "pin": "YOUR_PIN",
-            "site-id": 103,
             "sublibrary": "Your Sublibrary"
         }
     ],
@@ -14,5 +13,7 @@
     "convert_audiobookshelf_metadata": 0,
     "abort_on_warning": 0,
     "skip_reencode": 0,
+    "encoding": "aac",
+    "book_dir_template": "{author}/{title} - {id}",
     "encoder_count": 4
 }

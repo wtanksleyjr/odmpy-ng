@@ -1,6 +1,6 @@
 # odmpy-ng
 **OverDrive Manager Next Generation** — a tool for downloading and organizing audiobooks from OverDrive.
-⚠️ **Use at your own risk. Requires a valid library account.**
+⚠️ **Use at your own risk and in compliance with local law. Requires a valid library account.**
 
 ---
 
@@ -8,10 +8,10 @@
 
 - Interactive or Docker-based audiobook downloader for OverDrive
 - Scrapes audio URLs, chapters, and cover images
-- Converts MP3s into .m4b files with embedded chapter metadata
+- Converts MP3s into .m4b or .mka files with embedded chapter metadata
 - Generates metadata.json compatible with Audiobookshelf
-- Customizable and automated scraping via Selenium
-- Fully command-line compatible (one book per call)
+- Customizable and automated scraping via Playwright
+- Fully command-line compatible (one book per call or automatic fetching of new books)
 
 ---
 
@@ -71,26 +71,30 @@ cp config/config.example.json config/config.json
 
 ### Option 3: Run Locally
 
+Running locally is fully supported on Windows, macOS, and Linux. Playwright runs perfectly in a local environment, but requires its browser binaries to be installed after installing the python requirements.
+
 Requirements:
 - Python 3.9+
-- Google Chrome
 - [ffmpeg](https://ffmpeg.org/download.html)
 - `pip install -r requirements.txt`
+- Playwright Chromium browser binaries
 
 ```bash
 git clone https://github.com/kernalbin/odmpy-ng.git
 cd odmpy-ng
+pip install -r requirements.txt
+playwright install chromium
 python interactive.py [config_file_path]
 ```
 
-> **Note:** You may want to modify the default download path
+> **Note:** If you forget to run `playwright install chromium`, Playwright will display a helpful message instructing you to run it.
 
 ---
 
 ## Configuration
 
 You'll need to create a configuration file with your library's OverDrive URL and login credentials.  
-Example `config.json`:
+Example `config.json` (saved as `config/config.json`):
 
 ```json
 {
@@ -103,7 +107,9 @@ Example `config.json`:
             "sublibrary": "Your Sublibrary"
         }
     ],
+    "book_dir_template": "{author}/{title} - {id}",
     "low_quality_encode": 0,
+    "encoding": "aac",
     "download_thunder_metadata": 0,
     "convert_audiobookshelf_metadata": 0,
     "abort_on_warning": 0,
@@ -112,16 +118,14 @@ Example `config.json`:
 }
 ```
 
-Optionally, the "sublibrary" key will speed things up if your library's site is
-a cooperative; if you don't provide this, odmpy-ng will prompt you for it,
-listing all of the choices. Just enter the name of the sublibrary you
-recognize. If your library doesn't have a sublibrary, you can leave this key
-out, it'll be ignored.
+### Config Options Description
 
-Optionally, each library may have a "site-id" key with an integer value, which
-may be passed to the -s option to skip past the library selection screen. Any
-site-id values provided must be unique within your configuration file. See the
-provided `config.example.json` file for an example.
+- **`book_dir_template`**: Template for output folders relative to `/downloads`. Supports `{id}`, `{title}`, and `{author}` wildcards. Defaults to `"{author}/{title}"` if omitted.
+- **`sublibrary`**: Needed if your library is part of a cooperative. Enter the name of the sublibrary as it appears on the Overdrive library login page. If not needed, you can omit this key.
+- **`encoding`**: `"aac"` or `"mka"`. The former is more commonly supported, the latter is much faster, keeps the original audio quality, and works with Audiobookshelf.
+- **`skip_reencode`**: Set to `1` to download and assemble the audiobook without re-encoding, which runs significantly faster.
+
+See the provided `config.example.json` file for more details.
 
 ---
 
@@ -131,12 +135,8 @@ A quick look at the command line options:
 
 ```bash
 $ ./build-compose.py -d ~/audiobooks run --help
-Using image: selenium/standalone-chrome@sha256:27edde51c30256aa3dfab3c95141ce74fd971c58763f4f8c70ff7521faae3d2b.
-@sha256:27edde51c30256aa3dfab3c95141ce74fd971c58763f4f8c70ff7521faae3d2b
-Run commands as in-container user ubuntu (UID: 1000, GID: 1000)
-Process arguments for /entrypoint.sh --help
 Starting ODMPY-NG
-usage: interactive.py [-h] [--id ID] [--retry] [--name-dir NAME_DIR] [--library LIBRARY | --site-id SITE_ID] config_file
+usage: interactive.py [-h] [--id ID] [--retry] [--get-metadata] [--force] [--autofetch [AUTOFETCH]] [--library LIBRARY] config_file
 
 positional arguments:
   config_file           Path to config file
@@ -145,12 +145,12 @@ options:
   -h, --help            show this help message and exit
   --id ID, -i ID        Libby ID for a single book to download
   --retry, -r           Allow retry of stopped downloads (if left in tmp dir)
-  --name-dir NAME_DIR, -n NAME_DIR
-                        Fixed subdirectory relative to /downloads to move single downloaded book to
+  --get-metadata        Get metadata only for all indicated books, do not download
+  --force, -f           Allow selection/re-download of already downloaded books and replace their contents
+  --autofetch [AUTOFETCH], -a [AUTOFETCH]
+                        Automatically download at most the N most about-to-expire books (if N is specified)
   --library LIBRARY, -L LIBRARY
-                        Index of library within config to download from
-  --site-id SITE_ID, -s SITE_ID
-                        Site-Id assigned in config to library to download from
+                        Index of library within config to download from, or 'all'
 ```
 
 This demo shows a run of the builder, which has three options you need to know
@@ -159,8 +159,8 @@ location of the output directory for the downloaded files, the second allows a
 different folder to be used for in-progress downloads, and the third allows
 you, after building, to actually run the audiobook downloader. Any options
 following `run` will be passed to the downloader (note: they're all optional!).
-For freqent use, `-d` can be omitted if AUDIOBOOK_FOLDER is set in your
-environment, and `-t` can be specified with AUDIOBOOK_TMP or allowed to default
+For frequent use, `-d` can be omitted if `AUDIOBOOK_FOLDER` is set in your
+environment, and `-t` can be specified with `AUDIOBOOK_TMP` or allowed to default
 to the `tmp` subfolder of your download folder, leaving a very simple `run`
 command.
 
@@ -171,10 +171,8 @@ for them above, but here's a table with some brief descriptions:
 | Option                | Description |
 |-----------------------|-------------|
 | `-i`, `--id`              | Libby ID for a single book to download. You can see this from your library's webpage for the book. |
-| `-r`, `--retry`           | Allow retry of stopped downloads (if left in tmp dir). You can enable this after a download fails, the cleanup happens before the run, not after. |
-| `-L`, `--library`         | If you have multiple libraries in your config, you can specify which one to download from, counted from 0. |
-| `-s`, `--site-id`         | Same as above, but if your library entries have a site-id you can use that for this option. |
-| `-n`, `--name-dir`        | This can only be used when you select one single book, either by --id or manually; it will place the downloaded book into the indicated subfolder of your -d downloads directory. If this option isn't provided, the author and title will be used to build the book's folder name (be cautious, many series have the same name for every book). |
+| `-r`, `--retry`           | Allow retry of stopped downloads (if left in tmp dir). You can enable this after a download fails; cleanup happens before the run, not after. |
+| `-L`, `--library`         | If you have multiple libraries in your config, you can specify which one to download from, counted from 0 (or `"all"` to process all libraries). |
 
 ---
 
@@ -186,24 +184,23 @@ for them above, but here's a table with some brief descriptions:
 | `scraper.py`             | Scrapes OverDrive for audio, chapter, and cover metadata |
 | `overdrive_download.py`  | Downloads MP3 parts using scraped info and cookies |
 | `ffmetadata.py`          | Creates chapter and metadata file for m4b embedding |
-| `file_conversions.py`    | Converts MP3s into m4b with AAC and metadata |
-| `Dockerfile`             | Docker setup using Selenium Chrome base image |
+| `file_conversions.py`    | Converts MP3s into mka or m4b with AAC and metadata |
+| `Dockerfile`             | Docker setup using Playwright Chrome base image |
 | `entrypoint.sh`          | Entrypoint script for Docker container |
 
 ---
 
 ## Roadmap
 
-- [ ] Minimize bot-like behavior to reduce detection risk  
-- [ ] Batch download multiple books  
+- [X] Batch download multiple books  
+- [X] Support for branch libraries
 - [ ] Filter loans by media type
-- [ ] Support for branch libraries
 
 ---
 
 ## ⚠️ Disclaimer
 
-This tool is intended for personal use only.  
+This tool is intended for personal use only, and the user is responsible to adhere to the Terms of Service for Libby and Overdrive.
 You must have a valid library account with OverDrive access.
 
 > Use responsibly. The maintainers are not responsible for any misuse or violation of OverDrive’s terms of service.

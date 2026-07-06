@@ -1,10 +1,8 @@
-# Use selenium's standalone chrome image (includes Chrome+WebDriver)
-# Optionally, pass in a SHA tag in the form "@sha256:123456..." to use
-# a specific version, needed because Selenium's images are updated
-# frequently and even dated tags aren't stable.
+# Use Playwright's official Python image as the base image
+# This pre-installs Chromium, Firefox, WebKit and system-level dependencies.
 FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
 
-# Switch to root to install dependencies
+# Switch to root to install dependencies and allow gosu to step down privileges in the entrypoint
 USER root
 
 # Set working directory
@@ -36,4 +34,3 @@ ENTRYPOINT ["/entrypoint.sh"]
 # Default is interactive menus.
 # Alternately, --idle will run the permissions fixing, then just wait for docker exec to run the app.
 CMD []
-

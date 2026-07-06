@@ -4,11 +4,12 @@ services:
     shm_size: 2gb
     build:
       context: .
+      dockerfile: Dockerfile
     environment:
-      HOST_UID: ${HOST_UID}
-      HOST_GID: ${HOST_GID}
-      AUDIOBOOK_FOLDER: ${AUDIOBOOK_FOLDER}
-      AUDIOBOOK_TMP: ${AUDIOBOOK_TMP}
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
+      AUDIOBOOK_FOLDER: ${AUDIOBOOK_FOLDER:-./downloads}
+      AUDIOBOOK_TMP: ${AUDIOBOOK_TMP:-./tmp-downloads}
     volumes:
       - ./config:/config
       - ${AUDIOBOOK_FOLDER}:/downloads
@@ -17,4 +18,3 @@ services:
     entrypoint: ["/entrypoint.sh"]
     command: []
     restart: no
-
