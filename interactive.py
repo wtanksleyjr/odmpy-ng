@@ -74,11 +74,11 @@ def main():
     parser.add_argument("config_file", type=str, help="Path to config file")
     parser.add_argument("--id", "-i", type=int, help="Libby ID for a single book to download")
     parser.add_argument("--retry", "-r", action="store_true", help="Allow retry of stopped downloads (if left in tmp dir)")
-    parser.add_argument("--name-dir", "-n", type=str, help="Fixed subdirectory relative to /downloads to move single downloaded book to")
+    parser.add_argument("--name-dir", "-n", type=str, help="Subdirectory template relative to /downloads. Supports {id}, {title}, and {author} wildcards for multiple books")
     parser.add_argument("--get-metadata", action="store_true", help="Get metadata only for all indicated books, do not download.")
     # These two are mutually exclusive
     exclusive_group = parser.add_mutually_exclusive_group(required=False)
-    exclusive_group.add_argument("--library", "-L", type=int, help="Index of library within config to download from")
+    exclusive_group.add_argument("--library", "-L", type=str, help="Index of library within config to download from, or 'all'")
     exclusive_group.add_argument("--site-id", "-s", type=int, help="Site-Id assigned in config to library to download from")
     args = parser.parse_args()
 
@@ -143,7 +143,9 @@ def main():
     for i, library in enumerate(libraries):
         visible_marker = "    "
         if args.library is not None:
-            if i == args.library:
+            if args.library.lower() == 'all':
+                pass
+            elif str(i) == args.library:
                 visible_marker = " -> "
                 library_index = i
         elif args.site_id is not None:
@@ -154,66 +156,133 @@ def main():
             visible_marker = f"{i:>3}:"
         print(f"{visible_marker} {library['name']} - {library['url']}")
 
-    if library_index is None and args.library is not None:
+    if args.library is None and args.site_id is None:
+        print("  all: All Libraries (Combined List)")
+
+    if args.library is not None and args.library.lower() == 'all':
+        library_index = 'all'
+
+    if library_index is None and args.library is not None and args.library.lower() != 'all':
         print(f"Error: Library {args.library} not found in config")
         sys.exit(1)
     if library_index is None and args.site_id is not None:
         print(f"Error: Library matching site-id {args.site_id} not found in config")
         sys.exit(1)
 
-    if len(libraries) == 1:
-        # Only one library, automatically select it
-        library_index = 0
-    elif library_index is None:
-        # Let user select which library to use
-        library_text = input("\nSelect a library to use: ")
-        if not library_text:
-            sys.exit(0) # Easy polite exit
-        elif not library_text.isdigit():
-            library_index = None
-        library_index = int(library_text)
-
-    if library_index is None or library_index < 0 or library_index >= len(libraries):
-        print("Invalid library selection")
-        sys.exit(1)
-
-    # Create a compatible config object for the scraper
-    selected_library = libraries[library_index]
-    scraper_config = {
-        "library": selected_library["url"],
-        "user": selected_library["card_number"],
-        "pass": selected_library["pin"],
-        "tmp-dir": None, # to be filled in later
-        "allow-retry": args.retry,
-        "id": args.id,
-        "get-metadata": args.get_metadata,
-    }
-    if "sublibrary" in selected_library:
-        scraper_config["sublibrary"] = selected_library["sublibrary"]
+    if library_index is None and args.library is None and args.site_id is None:
+        if len(libraries) == 1:
+            # Only one library, automatically select it
+            library_index = 0
+        else:
+            # Let user select which library to use
+            library_text = input("\nSelect a library to use (or 'all'): ").strip()
+            if not library_text:
+                sys.exit(0) # Easy polite exit
+            elif library_text.lower() in ('all', 'a'):
+                library_index = 'all'
+            elif library_text.isdigit():
+                library_index = int(library_text)
+                if library_index < 0 or library_index >= len(libraries):
+                    print("Invalid library selection")
+                    sys.exit(1)
+            else:
+                print("Invalid library selection")
+                sys.exit(1)
 
     os.makedirs(downloads_dir, mode=0o755, exist_ok=True)
 
-    print(f"Using library: {selected_library['name']}")
+    books = []
 
-    scraper = Scraper(scraper_config, cookies)
-    new_cookies: Cookies = scraper.ensure_login()
+    if library_index == 'all':
+        print("\nScanning all libraries for loans...")
+        all_books = []
+        for idx, lib in enumerate(libraries):
+            print(f"\n--- Scanning Library {idx}: {lib['name']} ---")
+            scraper_config = {
+                "library": lib["url"],
+                "user": lib["card_number"],
+                "pass": lib["pin"],
+                "tmp-dir": None,
+                "allow-retry": args.retry,
+                "id": args.id,
+                "get-metadata": args.get_metadata,
+            }
+            if "sublibrary" in lib:
+                scraper_config["sublibrary"] = lib["sublibrary"]
 
-    if not new_cookies:
-        print("Sign in failed")
-        sys.exit(1)
+            try:
+                temp_scraper = Scraper(scraper_config, cookies)
+                new_cookies = temp_scraper.ensure_login()
+                if not new_cookies:
+                    print(f"Sign in failed for library: {lib['name']}")
+                    temp_scraper.close()
+                    continue
+
+                new_cookies.write_to_file(cookie_file)
+                with open(cookie_file) as f:
+                    cookies = Cookies.read_loaded(json.load(f))
+
+                lib_books = temp_scraper.get_loans()
+                for b in lib_books:
+                    b["library_index"] = idx
+                    b["library_name"] = lib["name"]
+                    all_books.append(b)
+
+                temp_scraper.close()
+            except Exception as e:
+                print(f"Error scanning library {lib['name']}: {e}")
+                try:
+                    temp_scraper.close()
+                except Exception:
+                    pass
+                continue
+
+        all_books.sort(key=lambda b: b.get("due_days", 999.0))
+        for idx, b in enumerate(all_books):
+            b["index"] = idx
+        books = all_books
+
     else:
-        print("Sign in successful")
+        # Create a compatible config object for the scraper
+        selected_library = libraries[library_index]
+        scraper_config = {
+            "library": selected_library["url"],
+            "user": selected_library["card_number"],
+            "pass": selected_library["pin"],
+            "tmp-dir": None, # to be filled in later
+            "allow-retry": args.retry,
+            "id": args.id,
+            "get-metadata": args.get_metadata,
+        }
+        if "sublibrary" in selected_library:
+            scraper_config["sublibrary"] = selected_library["sublibrary"]
 
-    # Update cookie file from the login - may overwrite later, but for now save the login.
-    new_cookies.write_to_file(cookie_file)
+        print(f"Using library: {selected_library['name']}")
 
-    # Collect list of loans
-    books = scraper.get_loans() # [{"index": 0, "title": "", "author": "", "link": "", "id": 0}]
+        scraper = Scraper(scraper_config, cookies)
+        new_cookies: Cookies = scraper.ensure_login()
+
+        if not new_cookies:
+            print("Sign in failed")
+            sys.exit(1)
+        else:
+            print("Sign in successful")
+
+        new_cookies.write_to_file(cookie_file)
+
+        books = scraper.get_loans()
+        for b in books:
+            b["library_index"] = library_index
+            b["library_name"] = selected_library["name"]
+
+        books.sort(key=lambda b: b.get("due_days", 999.0))
+        for idx, b in enumerate(books):
+            b["index"] = idx
 
     # Print loans for selection by user
     title_selections = []
 
-    find_id = str(scraper_config["id"]) if scraper_config["id"] else ''
+    find_id = str(args.id) if args.id else ''
     for book in books:
         this_one = False
         if book["id"] == find_id:
@@ -221,7 +290,9 @@ def main():
             this_one = True
 
         visible_marker = "->" if this_one else "  "
-        print(f"{visible_marker} {book['index']}: {book['title']} - {book['author']} ({book['id']})")
+        due_info = f" ({book['due_text']})" if book.get('due_text') else ""
+        lib_info = f" [{book['library_name']}]" if book.get('library_name') else ""
+        print(f"{visible_marker} {book['index']}: {book['title']} - {book['author']}{due_info}{lib_info} ({book['id']})")
 
     if not title_selections and books:
         assert not find_id, f"Libby shows checkout of {find_id} but was not found in books"
@@ -233,8 +304,16 @@ def main():
         sys.exit(1)
 
     if args.name_dir and len(title_selections) > 1:
-        print("ERROR: Cannot use --name-dir with multiple books")
-        sys.exit(1)
+        if not any(wildcard in args.name_dir for wildcard in ["{id}", "{title}", "{author}"]):
+            print("ERROR: Cannot use --name-dir with multiple books unless a wildcard like '{id}', '{title}', or '{author}' is included in the path template")
+            sys.exit(1)
+
+    active_scraper = None
+    active_library_index = None
+
+    if library_index != 'all':
+        active_scraper = scraper
+        active_library_index = library_index
 
     # For each selected book, get the data
     for title_index in title_selections:
@@ -244,9 +323,67 @@ def main():
             print(f"ERROR: Invalid book selection, should not happen: {title_index}")
             continue
 
-        # Create tmp directory with absolute path, one for each book.
+        book_lib_index = book_selection["library_index"]
+        lib = libraries[book_lib_index]
         tmp_dir = tmp_base / book_selection["id"]
-        scraper_config["tmp-dir"] = str(tmp_dir)
+
+        # Ensure correct scraper is active
+        if active_scraper is None or active_library_index != book_lib_index:
+            if active_scraper is not None:
+                print(f"Closing session for library {libraries[active_library_index]['name']}...")
+                try:
+                    active_scraper.close()
+                except Exception:
+                    pass
+                active_scraper = None
+
+            print(f"\nOpening session for library: {lib['name']}...")
+            if os.path.exists(cookie_file):
+                try:
+                    with open(cookie_file) as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, list) and loaded and loaded[0] == 1:
+                        cookies = Cookies.read_loaded(loaded)
+                except Exception:
+                    pass
+
+            init_config = {
+                "library": lib["url"],
+                "user": lib["card_number"],
+                "pass": lib["pin"],
+                "tmp-dir": None,
+                "allow-retry": args.retry,
+                "id": args.id,
+                "get-metadata": args.get_metadata,
+            }
+            if "sublibrary" in lib:
+                init_config["sublibrary"] = lib["sublibrary"]
+
+            active_scraper = Scraper(init_config, cookies)
+            new_cookies = active_scraper.ensure_login()
+            if not new_cookies:
+                print(f"Sign in failed for library: {lib['name']}")
+                active_scraper.close()
+                active_scraper = None
+                continue
+
+            new_cookies.write_to_file(cookie_file)
+            active_library_index = book_lib_index
+
+        book_scraper_config = {
+            "library": lib["url"],
+            "user": lib["card_number"],
+            "pass": lib["pin"],
+            "tmp-dir": str(tmp_dir),
+            "allow-retry": args.retry,
+            "id": args.id,
+            "get-metadata": args.get_metadata,
+        }
+        if "sublibrary" in lib:
+            book_scraper_config["sublibrary"] = lib["sublibrary"]
+
+        # Update tmp-dir on the active scraper config
+        active_scraper.config["tmp-dir"] = str(tmp_dir)
 
         # Check if progress markers exist to decide on directory cleanup
         has_markers = False
@@ -260,7 +397,7 @@ def main():
             ]
             has_markers = any((tmp_dir / marker).exists() for marker in marker_files)
 
-        if os.path.exists(tmp_dir) and not scraper_config.get("allow-retry") and not has_markers:
+        if os.path.exists(tmp_dir) and not args.retry and not has_markers:
             print(f"Removing old temporary directory (no progress markers found): {tmp_dir}")
             shutil.rmtree(tmp_dir)
 
@@ -287,7 +424,7 @@ def main():
 
         if not book_chapter_markers:
             print(f"Downloading book '{book_selection['title']}'...")
-            book_chapter_markers = scraper.get_book(book_selection, tmp_dir, scraper_config)
+            book_chapter_markers = active_scraper.get_book(book_selection, tmp_dir, book_scraper_config)
             if not book_chapter_markers:
                 print("Failed to download book.")
                 continue # Do not clean up tmp_dir so user can retry
@@ -308,7 +445,16 @@ def main():
         filter_table = str.maketrans(dict.fromkeys(string.punctuation))
 
         if args.name_dir:
-            download_path = os.path.abspath(os.path.join(downloads_dir, args.name_dir))
+            try:
+                name_dir_formatted = args.name_dir.format(
+                    id=book_selection["id"],
+                    title=book_title.translate(filter_table),
+                    author=book_author.translate(filter_table)
+                )
+            except Exception as e:
+                print(f"ERROR: Failed to format --name-dir string '{args.name_dir}': {e}")
+                sys.exit(1)
+            download_path = os.path.abspath(os.path.join(downloads_dir, name_dir_formatted))
         else:
             # Filter to remove punctuation from book title/author for file path
             download_path = os.path.abspath(os.path.join(
@@ -325,7 +471,6 @@ def main():
 
             tmp_info_path = tmp_dir / 'info.json'
             if tmp_info_path.exists():
-                print("Converting thunder metadata to ABS format")
                 temp_info_path = pathlib.Path(shutil.copy(tmp_info_path, download_path))
                 convert_metadata.convert_odm_to_abs(temp_info_path, chs, abs_metadata_path, title=book_title, author=book_author)
                 if config.get("download_thunder_metadata", 0):
@@ -333,7 +478,6 @@ def main():
                 else:
                     os.unlink(temp_info_path)
             else:
-                print("No thunder metadata found")
                 convert_metadata.convert_odm_to_abs(None, chs, abs_metadata_path, title=book_title, author=book_author)
 
             print("Provided audiobookshelf metadata")
@@ -482,9 +626,13 @@ def main():
             print(f"Warning: Could not remove temporary directory: {e}")
 
     # Update cookie file from the login and all operations.
-    scraper.get_cookies().write_to_file(cookie_file)
-
-    del scraper
+    if active_scraper is not None:
+        try:
+            active_scraper.get_cookies().write_to_file(cookie_file)
+            active_scraper.close()
+        except Exception:
+            pass
+        del active_scraper
 
 def overdrive_chapters_to_abs(odm_chs: list[tuple[str, int, int]]):
     chapters = []

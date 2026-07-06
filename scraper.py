@@ -76,6 +76,41 @@ class Cookies:
         if self:
             context.add_cookies(self.cookies)
 
+def parse_due_text_to_days(text: str) -> float:
+    """
+    Parses a string like 'Expires in 6 days' or 'DUE IN 4 DAYS' or 'Expires in 12 hours'
+    into a float number of days for sorting. Returns a large number (e.g., 999.0) if not found/unparseable.
+    """
+    if not text:
+        return 999.0
+
+    text_lower = text.lower()
+
+    # Try to find numbers and units
+    import re
+    # Match numbers (including decimals or integers) followed by units
+    match = re.search(r'(\d+(?:\.\d+)?)\s*(day|hour|minute|sec|wk|week)', text_lower)
+    if match:
+        val = float(match.group(1))
+        unit = match.group(2)
+        if 'hour' in unit:
+            return val / 24.0
+        elif 'minute' in unit:
+            return val / 1440.0
+        elif 'sec' in unit:
+            return val / 86400.0
+        elif 'week' in unit or 'wk' in unit:
+            return val * 7.0
+        else: # day/days
+            return val
+
+    # Fallback if there's a digit but no matched unit
+    match_digit = re.search(r'(\d+)', text_lower)
+    if match_digit:
+        return float(match_digit.group(1))
+
+    return 999.0
+
 class Scraper:
     """Automated Overdrive audiobook downloader."""
 
@@ -331,11 +366,16 @@ class Scraper:
             sys.exit(4)
 
         # It's completely fine if there are no loans; in that case, the loan blocks won't be present.
-        loan_blocks_locator = self.page.locator('.Loans-TitleContainerRight')
+        loan_blocks_locator = self.page.locator('.title-contents')
         try:
             loan_blocks_locator.first.wait_for(state="visible", timeout=2000)
         except Exception:
-            pass
+            # Fallback to .Loans-TitleContainerRight if .title-contents isn't found
+            loan_blocks_locator = self.page.locator('.Loans-TitleContainerRight')
+            try:
+                loan_blocks_locator.first.wait_for(state="visible", timeout=1000)
+            except Exception:
+                pass
 
         books = []
         loan_blocks = loan_blocks_locator.all()
@@ -367,12 +407,29 @@ class Scraper:
                 print(f"Book card at index {index} has no listen link: {title_text.strip()}")
                 continue
 
+            # Capture expiration / due info
+            due_text = ""
+            try:
+                due_locator = block.locator('.unavailable-title')
+                if due_locator.count() > 0:
+                    due_text = (due_locator.first.text_content() or "").strip()
+                if not due_text:
+                    red_locator = block.locator('.red')
+                    if red_locator.count() > 0:
+                        due_text = (red_locator.first.text_content() or "").strip()
+            except Exception:
+                pass
+
+            due_text = " ".join(due_text.split())
+
             books.append({
                 "index": index,
                 "title": (title_element.text_content() or "").strip(),
                 "author": (author_element.text_content() or "").strip(),
                 "link": listen_link,
-                "id": book_id
+                "id": book_id,
+                "due_text": due_text,
+                "due_days": parse_due_text_to_days(due_text)
             })
 
         return books
@@ -466,7 +523,7 @@ class Scraper:
 
                 if upper_bound == old_upper_bound:
                     if not mp3_searcher.move_to(lower_bound) or mp3_searcher.get_current_location() > lower_bound + 5:
-                        print("Normal seek failed to get near lower bound. trying anyhow...")
+                        print(f"Normal seek failed to get near lower bound. trying anyhow...")
                     if mp3_searcher.has_new_bounds():
                         continue
                     old_loc = mp3_searcher.current_location
@@ -517,6 +574,7 @@ class Scraper:
 
         # Fetch the cover image using Overdrive's Thunder API metadata (info.json) and construct Libby's high-res CDN resize URL
         cover_image_url = None
+        book_id = bookinfo["id"]
         info_json_path = download_path / 'info.json'
 
         if info_json_path.exists():
@@ -967,6 +1025,5 @@ class Mp3Searcher:
             if s >= start and s < self.chapter_seconds[i+1]:
                 candidate = i
         return candidate if candidate is not None else len(self.chapter_seconds) - 2
-
 
 
