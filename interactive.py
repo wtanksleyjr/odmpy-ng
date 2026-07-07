@@ -25,7 +25,7 @@ def get_download_path(book_selection, downloads_dir, name_dir_arg) -> str:
                 title=book_title.translate(filter_table),
                 author=book_author.translate(filter_table)
             )
-        except Exception as e:
+        except Exception:
             # Handle formatting errors
             name_dir_formatted = name_dir_arg # fallback
         download_path = os.path.abspath(os.path.join(downloads_dir, name_dir_formatted))
@@ -670,7 +670,7 @@ def main():
             # Step 3: Concatenate files to temp file
             concat_marker = tmp_dir / "concat_completed.marker"
             if concat_marker.exists() and (tmp_dir / temp_filename).exists():
-                print(f"Concatenation already completed. Skipping concatenation step.")
+                print("Concatenation already completed. Skipping concatenation step.")
             else:
                 print(f"Converting to single {ext[1:].upper()} (concatenating)...")
                 # Remove any partial temp file from a previous failed run before starting concatenation

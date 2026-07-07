@@ -97,7 +97,7 @@ def main():
 
     docker_cmd = ["docker", "compose", "run", "--remove-orphans", "--rm"] + interactive_flags + ["odmpy-ng"] + extra_args
 
-    print(f"Running odmpy-ng via Docker Compose...")
+    print("Running odmpy-ng via Docker Compose...")
     try:
         res = subprocess.call(docker_cmd, env=env)
         sys.exit(res)

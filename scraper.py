@@ -349,88 +349,148 @@ class Scraper:
 
     def get_loans(self) -> list[dict[str, Any]]:
         """
-            Retrieves all current audiobook loans for the user.
+            Retrieves all current audiobook loans for the user, traversing all pagination pages.
         """
         print("Finding books...")
         if not self.page:
             raise Exception("Browser page not initialized")
 
-        self.page.goto(f"{self.base_url}/account/loans")
+        from urllib.parse import urljoin, urlparse, parse_qs
 
-        # Ensure the page actually loaded by checking that an h1 of the class account-title is present
-        account_title_locator = self.page.locator('h1.account-title').first
-        try:
-            account_title_locator.wait_for(state="visible", timeout=15000)
-        except Exception as e:
-            print(f"Failed to load loans page (h1.account-title not visible): {e}")
-            sys.exit(4)
-
-        # It's completely fine if there are no loans; in that case, the loan blocks won't be present.
-        loan_blocks_locator = self.page.locator('.title-contents')
-        try:
-            loan_blocks_locator.first.wait_for(state="visible", timeout=2000)
-        except Exception:
-            # Fallback to .Loans-TitleContainerRight if .title-contents isn't found
-            loan_blocks_locator = self.page.locator('.Loans-TitleContainerRight')
-            try:
-                loan_blocks_locator.first.wait_for(state="visible", timeout=1000)
-            except Exception:
-                pass
-
+        visited_urls = set()
+        pages_to_visit = [f"{self.base_url}/account/loans"]
         books = []
-        loan_blocks = loan_blocks_locator.all()
+        seen_book_ids = set()
+        global_book_index = 0
 
-        for index, block in enumerate(loan_blocks):
-            title_element = block.locator('.title-name')
-            author_element = block.locator('.title-author')
-            listen_link_locator = block.get_by_role("link", name="Listen", exact=False).first
+        while pages_to_visit:
+            current_url = pages_to_visit.pop(0)
+            if current_url in visited_urls:
+                continue
+            visited_urls.add(current_url)
 
-            listen_link = None
-            book_id = None
+            print(f"Loading loans page: {current_url}")
+            try:
+                self.page.goto(current_url)
+            except Exception as e:
+                print(f"Failed to navigate to {current_url}: {e}")
+                continue
 
-            # Short fallback wait per card if not immediately visible (supports delayed rendering)
-            if not listen_link_locator.is_visible():
+            # Ensure the page actually loaded by checking that an h1 of the class account-title is present
+            account_title_locator = self.page.locator('h1.account-title').first
+            try:
+                account_title_locator.wait_for(state="visible", timeout=15000)
+            except Exception as e:
+                print(f"Failed to load loans page (h1.account-title not visible) at {current_url}: {e}")
+                continue
+
+            # It's completely fine if there are no loans; in that case, the loan blocks won't be present.
+            loan_blocks_locator = self.page.locator('.title-contents')
+            try:
+                loan_blocks_locator.first.wait_for(state="visible", timeout=2000)
+            except Exception:
+                # Fallback to .Loans-TitleContainerRight if .title-contents isn't found
+                loan_blocks_locator = self.page.locator('.Loans-TitleContainerRight')
                 try:
-                    listen_link_locator.wait_for(state="visible", timeout=500)
+                    loan_blocks_locator.first.wait_for(state="visible", timeout=1000)
                 except Exception:
                     pass
 
-            if listen_link_locator.is_visible():
-                listen_link = listen_link_locator.get_attribute('href')
-                if listen_link:
-                    book_id = listen_link.split('/')[-1]
-            else:
-                print(f"Book card at index {index} has no listen link or isn't visible")
+            loan_blocks = loan_blocks_locator.all()
+            print(f"Found {len(loan_blocks)} loan block(s) on page {current_url}")
 
-            if not book_id:
-                title_text = title_element.text_content() or "Unknown Title"
-                print(f"Book card at index {index} has no listen link: {title_text.strip()}")
-                continue
+            for block in loan_blocks:
+                title_element = block.locator('.title-name')
+                author_element = block.locator('.title-author')
+                listen_link_locator = block.get_by_role("link", name="Listen", exact=False).first
 
-            # Capture expiration / due info
-            due_text = ""
+                listen_link = None
+                book_id = None
+
+                # Short fallback wait per card if not immediately visible (supports delayed rendering)
+                if not listen_link_locator.is_visible():
+                    try:
+                        listen_link_locator.wait_for(state="visible", timeout=500)
+                    except Exception:
+                        pass
+
+                if listen_link_locator.is_visible():
+                    listen_link = listen_link_locator.get_attribute('href')
+                    if listen_link:
+                        book_id = listen_link.split('/')[-1]
+                else:
+                    print(f"Book card at index {global_book_index} has no listen link or isn't visible")
+
+                if not book_id:
+                    title_text = title_element.text_content() or "Unknown Title"
+                    print(f"Book card at index {global_book_index} has no listen link: {title_text.strip()}")
+                    continue
+
+                if book_id in seen_book_ids:
+                    print(f"Skipping duplicate book ID {book_id} (already collected)")
+                    continue
+                seen_book_ids.add(book_id)
+
+                # Capture expiration / due info
+                due_text = ""
+                try:
+                    due_locator = block.locator('.unavailable-title')
+                    if due_locator.count() > 0:
+                        due_text = (due_locator.first.text_content() or "").strip()
+                    if not due_text:
+                        red_locator = block.locator('.red')
+                        if red_locator.count() > 0:
+                            due_text = (red_locator.first.text_content() or "").strip()
+                except Exception:
+                    pass
+
+                due_text = " ".join(due_text.split())
+
+                books.append({
+                    "index": global_book_index,
+                    "title": (title_element.text_content() or "").strip(),
+                    "author": (author_element.text_content() or "").strip(),
+                    "link": listen_link,
+                    "id": book_id,
+                    "due_text": due_text,
+                    "due_days": parse_due_text_to_days(due_text)
+                })
+                global_book_index += 1
+
+            # Discover other pagination links on this page
             try:
-                due_locator = block.locator('.unavailable-title')
-                if due_locator.count() > 0:
-                    due_text = (due_locator.first.text_content() or "").strip()
-                if not due_text:
-                    red_locator = block.locator('.red')
-                    if red_locator.count() > 0:
-                        due_text = (red_locator.first.text_content() or "").strip()
-            except Exception:
-                pass
+                pagination_locators = self.page.locator('a[href*="page="], a.Pagination-item').all()
+                for loc in pagination_locators:
+                    href = loc.get_attribute('href')
+                    if href:
+                        full_page_url = urljoin(self.page.url, href)
+                        try:
+                            parsed_url = urlparse(full_page_url)
+                            # Ensure it is on the same base domain
+                            base_parsed = urlparse(self.base_url)
+                            if parsed_url.netloc != base_parsed.netloc:
+                                continue
 
-            due_text = " ".join(due_text.split())
+                            # Ensure the path is strictly /account/loans
+                            path = parsed_url.path.rstrip('/')
+                            if path != "/account/loans":
+                                continue
 
-            books.append({
-                "index": index,
-                "title": (title_element.text_content() or "").strip(),
-                "author": (author_element.text_content() or "").strip(),
-                "link": listen_link,
-                "id": book_id,
-                "due_text": due_text,
-                "due_days": parse_due_text_to_days(due_text)
-            })
+                            # Parse and filter query parameters
+                            query_params = parse_qs(parsed_url.query)
+                            if 'page' in query_params:
+                                page_str = query_params['page'][0]
+                                if page_str.isdigit():
+                                    page_num = int(page_str)
+                                    # page 1 is equivalent to the main loans page, which we already start with
+                                    if page_num > 1:
+                                        normalized_url = f"{self.base_url}/account/loans?page={page_num}"
+                                        if normalized_url not in visited_urls and normalized_url not in pages_to_visit:
+                                            pages_to_visit.append(normalized_url)
+                        except Exception as parse_err:
+                            print(f"Error parsing pagination URL {full_page_url}: {parse_err}")
+            except Exception as e:
+                print(f"Error scanning pagination links: {e}")
 
         return books
 
@@ -523,7 +583,7 @@ class Scraper:
 
                 if upper_bound == old_upper_bound:
                     if not mp3_searcher.move_to(lower_bound) or mp3_searcher.get_current_location() > lower_bound + 5:
-                        print(f"Normal seek failed to get near lower bound. trying anyhow...")
+                        print("Normal seek failed to get near lower bound. trying anyhow...")
                     if mp3_searcher.has_new_bounds():
                         continue
                     old_loc = mp3_searcher.current_location
@@ -574,7 +634,7 @@ class Scraper:
 
         # Fetch the cover image using Overdrive's Thunder API metadata (info.json) and construct Libby's high-res CDN resize URL
         cover_image_url = None
-        book_id = bookinfo["id"]
+        bookinfo["id"]
         info_json_path = download_path / 'info.json'
 
         if info_json_path.exists():
@@ -1025,5 +1085,4 @@ class Mp3Searcher:
             if s >= start and s < self.chapter_seconds[i+1]:
                 candidate = i
         return candidate if candidate is not None else len(self.chapter_seconds) - 2
-
 
