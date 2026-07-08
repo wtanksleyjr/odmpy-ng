@@ -3,9 +3,10 @@
 ffmpeg metadata file writer.
 """
 import os
+import sys
 import re
 import json
-from convert_metadata import to_seconds
+from convert_metadata import to_seconds, to_hms
 
 def escape_val(val) -> str:
     if not val:
@@ -110,19 +111,69 @@ def write_metafile(tmp_dir, book_chapter_markers, book_title, book_author):
             f.write(f"description={escape_val(desc_str)}\n")
         f.write("\n")
 
+        actual_audio_duration = 0.0
+        for fname in ["temp.mka", "temp.m4b"]:
+            audio_path = os.path.join(tmp_dir, fname)
+            if os.path.exists(audio_path):
+                try:
+                    from file_conversions import get_audio_duration
+                    actual_audio_duration = get_audio_duration(audio_path)
+                    if actual_audio_duration > 0:
+                        print(f"Detected actual concatenated audio file duration: {actual_audio_duration:.2f}s ({to_hms(int(actual_audio_duration))})")
+                except Exception as e:
+                    print(f"Warning: Could not check actual audio duration: {e}")
+                break
+
+        # Check total chapter duration vs actual audio duration for an early warning alert!
+        if actual_audio_duration > 0.0 and book_chapter_markers:
+            try:
+                last_ch = book_chapter_markers[-1]
+                expected_end = float(to_seconds(str(last_ch[2])))
+                discrepancy = abs(expected_end - actual_audio_duration)
+                if discrepancy > 15.0:
+                    print("\n" + "="*80)
+                    print("⚠️  WARNING: POTENTIAL AUDIOBOOK TRANSCRIPTION OR DOWNLOAD CORRUPTION DETECTED!  ⚠️")
+                    print(f"Expected metadata end: {to_hms(int(expected_end))} ({expected_end:.1f}s)")
+                    print(f"Actual audio file duration: {to_hms(int(actual_audio_duration))} ({actual_audio_duration:.1f}s)")
+                    print(f"Absolute discrepancy: {discrepancy:.1f} seconds.")
+                    if actual_audio_duration < expected_end - 15.0:
+                        print("The actual audio file is significantly SHORTER than the book's chapter markers indicate!")
+                        print("Please double check if some MP3 parts failed to download or were truncated during scraping.")
+                    else:
+                        print("The actual audio file is significantly LONGER than the book's chapter markers indicate!")
+                    print("="*80 + "\n")
+                    sys.exit(1)
+            except Exception as check_err:
+                print(f"Warning: Could not compute discrepancy checking: {check_err}")
+
         for marker in book_chapter_markers:
             title_marker, start, end = marker
 
             # Safely parse start and end times to float seconds, then convert to milliseconds
             try:
-                start_sec = to_seconds(str(start))
+                start_sec = float(to_seconds(str(start)))
             except Exception:
                 start_sec = 0.0
 
             try:
-                end_sec = to_seconds(str(end))
+                end_sec = float(to_seconds(str(end)))
             except Exception:
                 end_sec = 0.0
+
+            # Check if start/end are within the bounds of the actual audio file
+            if actual_audio_duration > 0.0:
+                if start_sec >= actual_audio_duration:
+                    print(f"WARNING: Skipping chapter '{title_marker}' starting at {to_hms(int(start_sec))} ({start_sec}s), "
+                          f"which is after/at actual audio duration {to_hms(int(actual_audio_duration))} ({actual_audio_duration}s).")
+                    continue
+                if end_sec > actual_audio_duration:
+                    print(f"WARNING: Truncating chapter '{title_marker}' end time from {to_hms(int(end_sec))} ({end_sec}s) "
+                          f"to actual audio duration {to_hms(int(actual_audio_duration))} ({actual_audio_duration}s).")
+                    end_sec = actual_audio_duration
+
+            if start_sec >= end_sec:
+                # Skip invalid zero-duration or negative chapters
+                continue
 
             start_ms = int(start_sec * 1000)
             end_ms = int(end_sec * 1000)

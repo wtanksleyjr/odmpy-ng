@@ -663,7 +663,6 @@ def main():
                 for mp3_file in tmp_dir.glob("*.mp3"):
                     try:
                         os.unlink(mp3_file)
-                        print(f"Cleaned up original MP3 file: {mp3_file.name}")
                     except Exception as e:
                         print(f"Warning: Could not remove MP3 file {mp3_file.name}: {e}")
 
@@ -702,7 +701,6 @@ def main():
                     if part_file.name != "temp.mp3" and part_file.is_file():
                         try:
                             os.unlink(part_file)
-                            print(f"Cleaned up individual part file: {part_file.name}")
                         except Exception as e:
                             print(f"Warning: Could not remove individual part file {part_file.name}: {e}")
             else:

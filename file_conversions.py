@@ -120,9 +120,35 @@ def encode_metadata(tmp_dir, input_file, output_file, metadata_file, cover_path=
     # 2. Metadata file (if exists)
     has_meta = os.path.exists(meta_path)
     if has_meta:
-        cmd += ["-i", meta_path, "-map_metadata", "1"]
+        cmd += ["-i", meta_path, "-map_metadata", "1", "-map_chapters", "1"]
     else:
         cmd += ["-map_metadata", "0"]
+
+    # Extract global metadata fields from ffmetadata to apply them via command line -metadata for extra safety
+    extra_metadata = {}
+    if has_meta:
+        try:
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith(';'):
+                        continue
+                    if line.startswith('[CHAPTER]'):
+                        break  # Stop parsing global metadata once we hit chapters
+                    if '=' in line:
+                        k, v = line.split('=', 1)
+                        # Unescape backslashes if escaped
+                        v_unescaped = v.replace('\\=', '=').replace('\\;', ';').replace('\\#', '#').replace('\\\\', '\\')
+                        extra_metadata[k.strip()] = v_unescaped.strip()
+        except Exception as e:
+            print(f"Warning: Could not parse ffmetadata for direct metadata options: {e}")
+
+    # Add direct metadata fields
+    for k, v in extra_metadata.items():
+        if v:
+            cmd += ["-metadata", f"{k}={v}"]
 
     # 3. Cover art (if exists)
     if cover_path and os.path.exists(cover_path):
@@ -149,3 +175,34 @@ def encode_metadata(tmp_dir, input_file, output_file, metadata_file, cover_path=
     except Exception as e:
         print(f"Error encoding metadata: {e}")
         return False
+
+def get_audio_duration(filepath: str) -> float:
+    """Gets the duration of an audio file in seconds using ffprobe or ffmpeg."""
+    import re
+    # 1. Try ffprobe
+    cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", filepath
+    ]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        dur = float(result.stdout.strip())
+        if dur > 0:
+            return dur
+    except Exception:
+        pass
+
+    # 2. Try ffmpeg fallback
+    cmd = ["ffmpeg", "-i", filepath]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Look for Duration: 00:00:00.00
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
+        if match:
+            hours, mins, secs = match.groups()
+            return int(hours) * 3600 + int(mins) * 60 + float(secs)
+    except Exception:
+        pass
+
+    return 0.0
+

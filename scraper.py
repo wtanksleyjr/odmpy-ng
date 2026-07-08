@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Converted Overdrive Audiobook Scraper using Playwright's Synchronous API.
+    Converted Overdrive Audiobook Scraper using Playwright's Synchronous API.
 """
 from dataclasses import dataclass, field, InitVar
 from typing import Tuple, Any, Optional
@@ -501,6 +501,10 @@ class Scraper:
         """
             Downloads selected audiobook.
         """
+        # Reset captured media URLs to ensure stale URLs from prior books are not carried over when reusing the Scraper session
+        self.mp3_urls = {}
+        self.captured_jpg_urls = []
+
         overdrive_download.download_thunder_metadata(self.context, bookinfo["id"], download_path / 'info.json')
         selected_title_link = bookinfo["link"]
         if not selected_title_link.startswith("http"):
@@ -634,7 +638,6 @@ class Scraper:
 
         # Fetch the cover image using Overdrive's Thunder API metadata (info.json) and construct Libby's high-res CDN resize URL
         cover_image_url = None
-        bookinfo["id"]
         info_json_path = download_path / 'info.json'
 
         if info_json_path.exists():
@@ -673,11 +676,11 @@ class Scraper:
         if not cover_image_url:
             print("Falling back to capturing cover from page network traffic...")
             captured_url = next(
-                (url for url in self.captured_jpg_urls if 'listen.overdrive.com' in url.lower()),
+                (url for url in mp3_searcher.captured_jpg_urls if 'listen.overdrive.com' in url.lower()),
                 next(
-                    (url for url in self.captured_jpg_urls if 'od-cdn.com' in url.lower()),
+                    (url for url in mp3_searcher.captured_jpg_urls if 'od-cdn.com' in url.lower()),
                     next(
-                        (url for url in self.captured_jpg_urls),
+                        (url for url in mp3_searcher.captured_jpg_urls),
                         None
                     )
                 )
@@ -743,6 +746,7 @@ class Mp3Searcher:
     chapter_next: Any = field(init=False)
 
     mp3_urls: dict[int, str] = field(default_factory=dict)
+    captured_jpg_urls: list[str] = field(default_factory=list)
     seen_parts: set[int] = field(default_factory=set)
     chapter_seconds: list[int] = field(default_factory=list)
     part_to_seconds: dict[int, int] = field(default_factory=dict)
@@ -752,6 +756,7 @@ class Mp3Searcher:
 
     def __post_init__(self, expected_length: str):
         self.mp3_urls = self.scraper.mp3_urls
+        self.captured_jpg_urls = self.scraper.captured_jpg_urls
         self.page = self.scraper.page
         self.expected_duration = convert_metadata.to_seconds(expected_length)
         self.part_to_seconds[1] = 0
@@ -897,6 +902,25 @@ class Mp3Searcher:
             title = elem.text_content() or f"Chapter {index+1}"
             end = chapter_times[index+1] if index+1 < len(chapter_times) else expected_length
             self.chapter_markers.append((title.strip(), chapter_times[index], end))
+
+        # Sanity Check: All chapters must be valid and align with the book's total duration
+        # 1. Any chapter start time must be less than the expected book duration.
+        # 2. Chapter times must be in ascending order.
+        last_s = -1
+        for ch, s in enumerate(self.chapter_seconds):
+            if s >= self.expected_duration:
+                raise Exception(
+                    f"Sanity Check Failed: Chapter {ch+1} starts at {to_hms(s)} ({s}s), "
+                    f"which is at or after the official book length of {expected_length} ({self.expected_duration}s). "
+                    f"The table of contents is completely wrong/misaligned!"
+                )
+            if s < last_s:
+                raise Exception(
+                    f"Sanity Check Failed: Chapters are not in chronological order! "
+                    f"Chapter {ch+1} starts at {to_hms(s)} ({s}s) which is earlier than "
+                    f"Chapter {ch} which started at {to_hms(last_s)} ({last_s}s)."
+                )
+            last_s = s
 
         self.page.keyboard.press("Escape")
         self.page.wait_for_timeout(1000)
@@ -1085,4 +1109,5 @@ class Mp3Searcher:
             if s >= start and s < self.chapter_seconds[i+1]:
                 candidate = i
         return candidate if candidate is not None else len(self.chapter_seconds) - 2
+
 
