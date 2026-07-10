@@ -127,7 +127,7 @@ Example `config.json` (saved as `config/config.json`):
 - **`book_dir_template`**: Template for output folders relative to `/downloads`. Supports `{id}`, `{title}`, and `{author}` wildcards. Defaults to `"{author}/{title}"` if omitted.
 - **`sublibrary`**: Needed if your library is part of a cooperative. Enter the name of the sublibrary as it appears on the Overdrive library login page. If not needed, you can omit this key.
 - **`encoding`**: `"aac"` or `"mka"`. The former is more commonly supported, the latter is much faster, keeps the original audio quality, and works with Audiobookshelf.
-- **`skip_reencode`**: Set to `1` to download and assemble the audiobook without re-encoding, which runs significantly faster.
+- **`skip_reencode`**: Set to `1` to download and assemble the audiobook without re-encoding, which runs significantly faster but leaves the book as multiple MP3 files.
 
 See the provided `config.example.json` file for more details.
 
@@ -177,6 +177,7 @@ for them above, but here's a table with some brief descriptions:
 | `-i`, `--id`              | Libby ID for a single book to download. You can see this from your library's webpage for the book. |
 | `-r`, `--retry`           | Allow retry of stopped downloads (if left in tmp dir). You can enable this after a download fails; cleanup happens before the run, not after. |
 | `-L`, `--library`         | If you have multiple libraries in your config, you can specify which one to download from, counted from 0 (or `"all"` to process all libraries). |
+| `-a`, `--autofetch` [N or ""]         | Automatically download at most the N most about-to-expire books (if N is specified, otherwise display which books and exit). |
 
 ---
 
@@ -184,12 +185,14 @@ for them above, but here's a table with some brief descriptions:
 
 | File / Script             | Description |
 |--------------------------|-------------|
+| `build-compose.py`       | Main entry point to run on your local machine, builds the rest |
 | `interactive.py`         | Main entry point — interactive selection and download UI |
 | `scraper.py`             | Scrapes OverDrive for audio, chapter, and cover metadata |
 | `overdrive_download.py`  | Downloads MP3 parts using scraped info and cookies |
 | `ffmetadata.py`          | Creates chapter and metadata file for m4b embedding |
 | `file_conversions.py`    | Converts MP3s into mka or m4b with AAC and metadata |
 | `Dockerfile`             | Docker setup using Playwright Chrome base image |
+| `docker-compose.yml`     | Docker compose file for running in Docker |
 | `entrypoint.sh`          | Entrypoint script for Docker container |
 
 ---
@@ -198,7 +201,7 @@ for them above, but here's a table with some brief descriptions:
 
 - [X] Batch download multiple books  
 - [X] Support for branch libraries
-- [ ] Filter loans by media type
+- [ ] Support ebooks
 
 ---
 
