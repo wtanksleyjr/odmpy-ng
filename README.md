@@ -186,7 +186,7 @@ for them above, but here's a table with some brief descriptions:
 | File / Script             | Description |
 |--------------------------|-------------|
 | `build-compose.py`       | Main entry point to run on your local machine, builds the rest |
-| `interactive.py`         | Main entry point — interactive selection and download UI |
+| `interactive.py`         | Main entry point to run within Docker, parses command line and config file and runs the rest |
 | `scraper.py`             | Scrapes OverDrive for audio, chapter, and cover metadata |
 | `overdrive_download.py`  | Downloads MP3 parts using scraped info and cookies |
 | `ffmetadata.py`          | Creates chapter and metadata file for m4b embedding |
