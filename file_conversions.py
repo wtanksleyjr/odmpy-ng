@@ -120,9 +120,11 @@ def encode_metadata(tmp_dir, input_file, output_file, metadata_file, cover_path=
     # 2. Metadata file (if exists)
     has_meta = os.path.exists(meta_path)
     if has_meta:
-        cmd += ["-i", meta_path, "-map_metadata", "1", "-map_chapters", "1"]
-    else:
-        cmd += ["-map_metadata", "0"]
+        cmd += ["-i", meta_path]
+
+    has_cover = cover_path and os.path.exists(cover_path)
+    if has_cover and not is_mka_or_mkv:
+        cmd += ["-i", str(cover_path)]
 
     # Extract global metadata fields from ffmetadata to apply them via command line -metadata for extra safety
     extra_metadata = {}
@@ -145,13 +147,18 @@ def encode_metadata(tmp_dir, input_file, output_file, metadata_file, cover_path=
         except Exception as e:
             print(f"Warning: Could not parse ffmetadata for direct metadata options: {e}")
 
+    if has_meta:
+        cmd += ["-map_metadata", "1", "-map_chapters", "1"]
+    else:
+        cmd += ["-map_metadata", "0"]
+
     # Add direct metadata fields
     for k, v in extra_metadata.items():
         if v:
             cmd += ["-metadata", f"{k}={v}"]
 
     # 3. Cover art (if exists)
-    if cover_path and os.path.exists(cover_path):
+    if has_cover:
         if is_mka_or_mkv:
             mime_type = "image/png" if str(cover_path).lower().endswith(".png") else "image/jpeg"
             cmd += [
@@ -161,7 +168,6 @@ def encode_metadata(tmp_dir, input_file, output_file, metadata_file, cover_path=
                 "-c:a", "copy"
             ]
         else:
-            cmd += ["-i", str(cover_path)]
             cover_idx = "2" if has_meta else "1"
             cmd += ["-map", "0:a", "-map", f"{cover_idx}:v", "-c:a", "copy", "-c:v", "copy", "-disposition:v", "attached_pic"]
     else:
@@ -205,4 +211,3 @@ def get_audio_duration(filepath: str) -> float:
         pass
 
     return 0.0
-
